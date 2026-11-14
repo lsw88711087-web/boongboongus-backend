@@ -189,6 +189,39 @@ com.boongboongus.backend
 
 기본 프론트 Origin은 `http://localhost:3000`, `http://localhost:5173`입니다. 쿠키 인증 대신 향후 Bearer 인증을 연결하는 구성이며, 인증 구현에 맞춰 CORS를 조정합니다.
 
+## DJ 플레이리스트 추천
+
+1. Swagger에서 Bearer 토큰과 함께 `POST /api/v1/playlists`를 호출합니다. `Idempotency-Key` 헤더에는 UUID를 넣고, 본문에는 예를 들어 `{"moods":["ROMANTIC"],"weather":"SUNNY","genres":["K_POP"]}`를 보냅니다. 선택 가능한 코드는 `GET /api/v1/app-config`에 있습니다.
+2. `202` 응답의 `data.id`로 `GET /api/v1/jobs/{jobId}`를 조회합니다. `SUCCEEDED`이면 `data.resourceId`가 플레이리스트 ID입니다.
+3. `GET /api/v1/playlists/{playlistId}`로 곡 목록을 조회합니다.
+4. `PATCH /api/v1/playlists/{playlistId}/tracks`에 남길 곡 ID를 새 순서대로 `trackIds`에 넣고, 조회한 `version`을 `expectedVersion`으로 보냅니다. 주행에 연결된 목록은 현재 연결된 운전자와 동승자가 함께 편집할 수 있습니다. 주행 없이 만든 목록은 생성자가 편집합니다. 다른 편집이 먼저 저장되면 `409 VERSION_CONFLICT`를 반환합니다.
+
+5. `PUT /api/v1/me/playlists/{playlistId}`로 내 보관함에 추가합니다. 같은 요청을 반복해도 한 번만 저장됩니다.
+6. `GET /api/v1/me/playlists`로 보관함을 조회합니다. 다음 페이지에는 응답의 `nextCursor`를 `cursor`로 전달합니다.
+7. `DELETE /api/v1/me/playlists/{playlistId}`로 내 보관을 취소합니다. 성공 응답은 `204`입니다.
+
+서버 환경변수 또는 로컬 `.env`에 `GROQ_API_KEY`, `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`을 설정하면 Groq와 Spotify로 추천합니다. Groq 모델은 `GROQ_DJ_MODEL`로 설정할 수 있으며 기본값은 `openai/gpt-oss-20b`입니다. Groq에는 분위기·날씨·장르와 요청할 후보 수를 보내고, 서버가 Spotify KR 검색에서 제목과 가수가 맞는 곡을 골라 결과를 구성합니다.
+
+외부 API 설정 없이 로컬에서 확인하려면 `src/main/resources/dj-tracks.yml`의 `app.dj.tracks` 목록을 사용합니다. 목록이 비어 있으면 생성 API가 `503 SERVICE_UNAVAILABLE`을 반환합니다. 팀에서 사용할 곡의 메타데이터를 다음 구조로 등록하세요.
+
+```yaml
+app:
+  dj:
+    tracks:
+      - id: trk_example
+        title: 예시 곡
+        artist: 예시 아티스트
+        duration-seconds: 240
+        provider-track-id: example01
+        provider-uri: example:track:01
+        external-url: https://music.example.invalid/track/01
+        moods: [ROMANTIC]
+        weather: [SUNNY]
+        genres: [K_POP]
+```
+
+주행 ID가 없거나 목적지가 없는 주행이면 목표 시간을 3600초로 잡습니다. 목적지가 있는 주행은 최근 GPS 좌표(없으면 출발지)와 목적지로 카카오 길찾기 예상 시간을 계산합니다.
+
 ## GitHub 협업
 
 팀 작업 기준은 [CONTRIBUTING.md](CONTRIBUTING.md), AI 공통 지침은 [AGENTS.md](AGENTS.md)를 참고합니다.

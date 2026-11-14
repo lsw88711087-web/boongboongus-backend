@@ -1,0 +1,4 @@
+app:
+  dj:
+    # Populate with the team's approved track metadata.
+    tracks: []

@@ -85,6 +85,15 @@ class PlaceRouteService implements DriveRouteLookup {
         }
     }
 
+    @Override
+    public int estimatePlaylistDuration(Place origin, Place destination) {
+        try {
+            return kakao.find(new Input(origin, destination, List.of(), Preference.RECOMMENDED)).durationSeconds();
+        } catch (HomeExploreException exception) {
+            throw new LiveRouteUnavailable();
+        }
+    }
+
     private StoredRoute accessible(String userId, String coupleId, String routeId) {
         StoredRoute row = lookup(routeId).orElseThrow(() -> notFound("경로를 찾을 수 없습니다."));
         boolean attached = coupleId != null && jdbc.sql("""
