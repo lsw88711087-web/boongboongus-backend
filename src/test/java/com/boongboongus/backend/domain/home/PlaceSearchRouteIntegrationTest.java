@@ -1,6 +1,7 @@
 package com.boongboongus.backend.domain.home;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -15,9 +16,11 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.AfterAll;
@@ -56,6 +59,7 @@ class PlaceSearchRouteIntegrationTest {
             {"placeId":"plc_seoul_forest","name":"클라이언트 예시","address":"","coordinate":{"latitude":0,"longitude":0}}
             """;
     private static final AtomicInteger DIRECTION_CALLS = new AtomicInteger();
+    private static final AtomicReference<String> PARKING_RESPONSE = new AtomicReference<>();
     private static HttpServer server;
 
     @Autowired MockMvc mvc;
@@ -66,6 +70,7 @@ class PlaceSearchRouteIntegrationTest {
     static void configure(DynamicPropertyRegistry registry) throws IOException {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/v2/local/search/keyword.json", PlaceSearchRouteIntegrationTest::keyword);
+        server.createContext("/v2/local/search/category.json", PlaceSearchRouteIntegrationTest::parking);
         server.createContext("/v2/local/geo/coord2address.json", PlaceSearchRouteIntegrationTest::address);
         server.createContext("/v1/directions", PlaceSearchRouteIntegrationTest::directions);
         server.start();
@@ -146,6 +151,26 @@ class PlaceSearchRouteIntegrationTest {
     }
 
     @Test
+    void placeDetailShowsNearbyParkingAndStillLoadsWhenParkingIsUnavailable() throws Exception {
+        String path = API + "/places/plc_seoul_forest";
+        PARKING_RESPONSE.set("""
+                {"documents":[{"place_name":"서울숲 인근 주차장","distance":"200"}]}
+                """);
+        mvc.perform(get(path).principal(() -> DRIVER).param("latitude", "37.5").param("longitude", "127"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.parkingInfo").value("서울숲 인근 주차장 · 목적지에서 200m"));
+
+        PARKING_RESPONSE.set("{\"documents\":[]}");
+        mvc.perform(get(path).principal(() -> DRIVER)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.parkingInfo").value((Object) null));
+
+        PARKING_RESPONSE.set(null);
+        mvc.perform(get(path).principal(() -> DRIVER)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.place.id").value("plc_seoul_forest"))
+                .andExpect(jsonPath("$.data.parkingInfo").value((Object) null));
+    }
+
+    @Test
     void liveRouteCanBeAttachedAndStartedButAnExpiredUnusedRouteCannotBeRead() throws Exception {
         String request = "{\"origin\":" + ORIGIN + ",\"destination\":" + DESTINATION + ",\"preference\":\"FASTEST\"}";
         String key = UUID.randomUUID().toString();
@@ -155,6 +180,7 @@ class PlaceSearchRouteIntegrationTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.destination.name").value("서울숲"))
                 .andExpect(jsonPath("$.data.polyline").isNotEmpty())
+                .andExpect(jsonPath("$.data.trafficSummary").value(nullValue()))
                 .andExpect(jsonPath("$.data.provider").value("KAKAO")).andReturn()).path("id").asText();
         mvc.perform(post(ROUTES).principal(() -> DRIVER).header("Idempotency-Key", key)
                 .contentType(MediaType.APPLICATION_JSON).content(request))
@@ -165,7 +191,7 @@ class PlaceSearchRouteIntegrationTest {
         assertThat(DIRECTION_CALLS.get() - before).isEqualTo(3);
         String stored = jdbc.sql("SELECT route_input FROM place_routes WHERE id = :id").param("id", id)
                 .query(String.class).single();
-        assertThat(stored).doesNotContain("polyline", "distanceMeters", "durationSeconds");
+        assertThat(stored).doesNotContain("polyline", "distanceMeters", "durationSeconds", "trafficSummary");
 
         String drive = data(mvc.perform(post(API + "/drives").principal(() -> DRIVER)
                 .header("X-Couple-Id", COUPLE).header("Idempotency-Key", UUID.randomUUID().toString())
@@ -191,6 +217,42 @@ class PlaceSearchRouteIntegrationTest {
         mvc.perform(get(ROUTES + "/" + unused).principal(() -> DRIVER)).andExpect(status().isGone())
                 .andExpect(jsonPath("$.error.code").value("ROUTE_EXPIRED"));
         mvc.perform(get(ROUTES + "/" + unused).principal(() -> "third_party")).andExpect(status().isNotFound());
+    }
+
+    @Test
+    void routeUsesDistanceInsteadOfSegmentCountAndIncludesTrafficOnRead() throws Exception {
+        int before = DIRECTION_CALLS.get();
+        JsonNode route = createTrafficRoute(37.51);
+        assertThat(route.path("trafficSummary").path("status").asText()).isEqualTo("SMOOTH");
+        assertThat(route.path("trafficSummary").path("congestedDistanceMeters").asLong()).isEqualTo(200);
+        mvc.perform(get(ROUTES + "/" + route.path("id").asText()).principal(() -> DRIVER))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.trafficSummary.status").value("SMOOTH"))
+                .andExpect(jsonPath("$.data.trafficSummary.congestedDistanceMeters").value(200));
+        assertThat(DIRECTION_CALLS.get() - before).isEqualTo(2);
+    }
+
+    @Test
+    void usesSlowerStatusForTiesAtHalfCoverageAndPrioritizesBlockedRoads() throws Exception {
+        assertThat(createTrafficRoute(37.52).path("trafficSummary").path("status").asText()).isEqualTo("SLOW");
+        assertThat(createTrafficRoute(37.53).path("trafficSummary").path("status").asText()).isEqualTo("BLOCKED");
+    }
+
+    @Test
+    void insufficientOrUnknownTrafficDoesNotInvalidateRoute() throws Exception {
+        for (double latitude : new double[] {37.54, 37.55}) {
+            JsonNode route = createTrafficRoute(latitude);
+            assertThat(route.path("polyline").asText()).isNotEmpty();
+            assertThat(route.path("trafficSummary").isNull()).isTrue();
+        }
+    }
+
+    private JsonNode createTrafficRoute(double latitude) throws Exception {
+        String request = "{\"origin\":" + ORIGIN.replace("37.5", Double.toString(latitude))
+                + ",\"destination\":" + DESTINATION + ",\"preference\":\"FASTEST\"}";
+        return data(mvc.perform(post(ROUTES).principal(() -> DRIVER)
+                .header("Idempotency-Key", UUID.randomUUID().toString()).contentType(MediaType.APPLICATION_JSON)
+                .content(request)).andExpect(status().isCreated()).andReturn());
     }
 
     private JsonNode save(String user, String key, String query) throws Exception {
@@ -232,6 +294,19 @@ class PlaceSearchRouteIntegrationTest {
         }
     }
 
+    private static void parking(HttpExchange exchange) throws IOException {
+        var parameters = List.of(exchange.getRequestURI().getRawQuery().split("&"));
+        if (!"GET".equals(exchange.getRequestMethod())
+                || !"KakaoAK fake-local-test-key".equals(exchange.getRequestHeaders().getFirst("Authorization"))
+                || !parameters.containsAll(List.of("category_group_code=PK6", "x=127.0417982", "y=37.5430717",
+                        "radius=500", "sort=distance", "size=1"))) {
+            respond(exchange, 400, "{}");
+            return;
+        }
+        String body = PARKING_RESPONSE.get();
+        respond(exchange, body == null ? 503 : 200, body == null ? "{}" : body);
+    }
+
     private static void directions(HttpExchange exchange) throws IOException {
         DIRECTION_CALLS.incrementAndGet();
         String query = exchange.getRequestURI().getRawQuery();
@@ -241,10 +316,27 @@ class PlaceSearchRouteIntegrationTest {
             respond(exchange, 503, "{}");
             return;
         }
+        String origin = query.split("&")[0];
+        String roads = switch (origin) {
+            case "origin=127.0,37.51" -> String.join(",", trafficRoad(4200, 4), trafficRoad(300, 2),
+                    trafficRoad(400, 3), trafficRoad(200, 1));
+            case "origin=127.0,37.52" -> String.join(",", trafficRoad(1275, 4), trafficRoad(625, 2),
+                    trafficRoad(650, 3), trafficRoad(2550, 0));
+            case "origin=127.0,37.53" -> String.join(",", trafficRoad(100, 6), trafficRoad(5000, 0));
+            case "origin=127.0,37.54" -> String.join(",", trafficRoad(2549, 4), trafficRoad(2551, 0));
+            case "origin=127.0,37.55" -> trafficRoad(5100, 0);
+            default -> "{\"vertexes\":[127.0,37.5,127.0417982,37.5430717]}";
+        };
         respond(exchange, 200, """
                 {"routes":[{"result_code":0,"summary":{"distance":5100,"duration":680},
-                "sections":[{"roads":[{"vertexes":[127.0,37.5,127.0417982,37.5430717]}]}]}]}
-                """);
+                "sections":[{"roads":[%s]}]}]}
+                """.formatted(roads));
+    }
+
+    private static String trafficRoad(int distance, int state) {
+        return """
+                {"distance":%d,"traffic_state":%d,"vertexes":[127.0,37.5,127.0417982,37.5430717]}
+                """.formatted(distance, state);
     }
 
     private static void respond(HttpExchange exchange, int status, String body) throws IOException {
