@@ -6,6 +6,10 @@ import java.util.Optional;
 public interface CurrentCoupleLookup {
     Optional<Couple> findCurrent(String userId);
 
+    default boolean lockCurrent(String userId, String coupleId) {
+        return findCurrent(userId).filter(couple -> couple.id().equals(coupleId)).isPresent();
+    }
+
     record Couple(String id, String firstMemberId, String secondMemberId) {
         boolean contains(String userId) {
             return userId.equals(firstMemberId) || userId.equals(secondMemberId);

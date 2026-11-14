@@ -1,0 +1,1 @@
+ALTER TABLE couple_invites ADD COLUMN consumed_at TIMESTAMP WITH TIME ZONE;

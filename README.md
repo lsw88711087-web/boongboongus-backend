@@ -80,6 +80,42 @@ FAQ는 `src/main/resources/faqs.yml`의 `app.faq.items`에 `id`, `question`, `an
 
 `DELETE /api/v1/me`는 Bearer 액세스 토큰과 `X-Reauth-Token`으로 본인 증명을 확인합니다. 준비·진행·일시중단 주행이 있으면 `409 ACTIVE_DRIVE_EXISTS`입니다. 현재는 조건을 통과해도 `503 SERVICE_UNAVAILABLE`을 반환합니다. 카카오 및 연결된 공급자 해제, 주행 시작과의 동시 처리, 커플·개인 데이터 정리, 탈퇴 계정의 JWT 차단이 연결된 뒤에만 탈퇴를 완료합니다.
 
+### 현재 커플 조회
+
+`GET /api/v1/couples/me`는 Bearer 액세스 토큰이 필요합니다. 연결 이력이 없으면 `UNLINKED`, 해제 이력만 있으면 `DISCONNECTED`를 반환하며 두 경우 모두 `couple`은 null입니다. 앱은 두 상태에서 커플 연결하기 버튼을 표시합니다. 현재 연결이 있으면 `CONNECTED`와 현재 두 멤버, 이름, 시작일을 반환합니다. D+는 한국 날짜 기준 시작 당일이 1입니다. 누적 거리와 완료 카드 수는 기록 기능을 연결하기 전까지 0입니다.
+
+### 커플 초대 코드 발급
+
+`POST /api/v1/couple-invites`는 Bearer 액세스 토큰과 `Idempotency-Key`(16~128자)를 받으며 요청 본문은 없습니다. 유효한 기존 코드가 있으면 같은 코드를 반환하고, 없으면 24시간짜리 코드를 발급합니다. 두 경우 모두 `201`이며, 이미 연결된 회원이 새로 발급을 요청하면 `409 ALREADY_COUPLED`를 반환합니다. 앱은 코드 길이를 가정하지 않습니다.
+
+`GET /api/v1/couple-invites/me`는 Bearer 토큰으로 내 유효 초대만 조회합니다. 코드가 없거나 만료됐으면 `404 INVITE_NOT_FOUND`를 반환합니다. 조회로 새 코드가 발급되거나 유효기간이 바뀌지 않습니다.
+
+### 초대 코드로 커플 연결
+
+`POST /api/v1/couples`에 Bearer 액세스 토큰과 `Idempotency-Key`(16~128자), 본문의 `code`를 전달합니다. 코드는 앞뒤 공백과 대소문자를 무시해 비교합니다. 연결 성공 시 `201`과 커플 정보를 반환하고, 코드는 한 번만 소비됩니다. 이름과 시작일은 각 항목별로 발급자 후보, 참가자 후보, 기본값 순서로 선택합니다. 같은 상대와 해제한 이력이 있으면 `409 COUPLE_RESTORE_REQUIRED`를 반환합니다.
+
+### 커플 연결 해제
+
+`DELETE /api/v1/couples/me`에 Bearer 토큰과 현재 관계의 `X-Couple-Id`를 보냅니다. 활성 주행이 있으면 `409 ACTIVE_DRIVE_EXISTS`, 현재 관계와 다르면 `403 COUPLE_CONTEXT_CHANGED`를 반환합니다. 성공 및 동일한 마지막 관계의 해제 재시도는 `204`입니다. 기존 기록은 보존하고 현재 커플 권한을 필요로 하는 접근을 차단합니다. 앱은 성공 후 마이 화면으로 이동합니다.
+
+### 이전 커플 연결 복구
+
+`POST /api/v1/couples/restore`에 Bearer 토큰, `Idempotency-Key`와 상대가 새로 발급한 유효 초대 코드 `code`를 보냅니다. 두 회원이 미연결이고 동일 상대의 해제 이력이 있을 때 가장 최근 관계를 복구합니다. 성공 시 `200`과 기존 커플 ID·이름·시작일, 증가한 버전을 반환합니다. 복구와 코드 사용 처리는 같은 트랜잭션으로 묶습니다. 이전 관계가 없으면 `404 COUPLE_HISTORY_NOT_FOUND`를 반환합니다.
+
+### 커플 시작일 변경
+
+`PATCH /api/v1/couples/me`에 Bearer 토큰, 현재 관계의 `X-Couple-Id`, 본문의 `startDate`와 `expectedVersion`을 보냅니다. 두 멤버 모두 수정할 수 있습니다. 미래 날짜는 `422 INVALID_START_DATE`, 버전이 다르면 `409 VERSION_CONFLICT`입니다. 성공 응답에는 변경된 시작일, 한국 날짜 기준 D+, 증가한 버전이 들어 있습니다.
+
+### 붕붕이 이름 변경
+
+`PATCH /api/v1/couples/me/mascot-name`에 Bearer 토큰, `X-Couple-Id`, 본문의 `name`과 `expectedVersion`을 보냅니다. 연결된 두 멤버가 수정할 수 있고, 이름은 앞뒤 공백을 제외하고 1~20자입니다. 시작일 수정과 같은 커플 버전을 사용합니다. 성공 시 바뀐 이름과 증가한 버전을 반환하며, 버전이 다르면 `409 VERSION_CONFLICT`를 반환합니다.
+
+### 초대 코드 폐기와 기기 푸시 등록
+
+- `DELETE /api/v1/couple-invites/{inviteId}`는 내 초대 코드의 효력을 없애고 `204`를 반환합니다. 이미 연결에 사용한 코드는 `409 INVITE_ALREADY_USED`입니다. 폐기 후 새 코드를 발급할 때 새 `Idempotency-Key`를 사용합니다.
+- `PUT /api/v1/devices/{deviceId}/push-token`에 `token`, `platform`(IOS/ANDROID/WEB), `enabled`를 보냅니다. 동일 기기에서 계정이 바뀌면 등록이 현재 계정으로 이동합니다. 성공 응답은 `200`과 `accepted: true`입니다.
+- `DELETE /api/v1/devices/{deviceId}/push-token`은 내 등록만 삭제합니다. 다른 계정에 등록됐거나 등록이 없으면 `204`를 반환합니다. 세 API 모두 Bearer 토큰이 필요합니다.
+
 ## PostgreSQL 개발 환경
 
 카카오 로그인을 시작하려면 서버의 `.env` 또는 환경변수에 `KAKAO_LOGIN_REST_API_KEY`와 `KAKAO_LOGIN_REDIRECT_URIS`를 설정합니다. 콜백 주소는 카카오디벨로퍼스에 등록한 값과 정확히 일치해야 하며, 여러 주소는 쉼표로 구분합니다. 요청에는 `provider=KAKAO`, `purpose=LOGIN`, `redirectUri`와 앱이 생성한 S256 `codeChallenge`(43자)를 보냅니다. 성공하면 `201`과 카카오 로그인 URL, `authSessionId`, `state`, 10분 후의 만료 시각을 반환합니다. Flyway는 로그인 시도를 저장할 `auth_sessions` 테이블을 생성합니다. 토큰 교환, 만료 세션 정리와 로그인 시작 요청의 호출 제한은 후속 작업입니다.

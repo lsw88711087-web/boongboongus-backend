@@ -51,6 +51,15 @@ class AccessTokenFilter extends OncePerRequestFilter {
 
         String path = request.getRequestURI().substring(request.getContextPath().length());
         if (("/api/v1/me".equals(path) && List.of("GET", "HEAD", "PATCH", "DELETE").contains(request.getMethod()))
+                || ("/api/v1/couple-invites".equals(path) && "POST".equals(request.getMethod()))
+                || ("DELETE".equals(request.getMethod()) && path.matches("/api/v1/couple-invites/[^/]+"))
+                || (List.of("PUT", "DELETE").contains(request.getMethod())
+                        && path.matches("/api/v1/devices/[^/]+/push-token"))
+                || ("/api/v1/couple-invites/me".equals(path) && List.of("GET", "HEAD").contains(request.getMethod()))
+                || ("POST".equals(request.getMethod())
+                        && List.of("/api/v1/couples", "/api/v1/couples/restore").contains(path))
+                || ("/api/v1/couples/me/mascot-name".equals(path) && "PATCH".equals(request.getMethod()))
+                || ("/api/v1/couples/me".equals(path) && List.of("GET", "HEAD", "PATCH", "DELETE").contains(request.getMethod()))
                 || ("/api/v1/me/onboarding".equals(path) && "PUT".equals(request.getMethod()))
                 || ("POST".equals(request.getMethod())
                         && List.of("/api/v1/auth/reauth", "/api/v1/auth/reauth/authorizations").contains(path))) {

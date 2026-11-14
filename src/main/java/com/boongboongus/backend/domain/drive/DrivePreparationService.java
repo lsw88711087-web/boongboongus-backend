@@ -57,6 +57,10 @@ public class DrivePreparationService {
         Actor actor = currentActor(principal);
         requireMatchingCouple(actor, coupleId);
         return executeOnce(actor, key, List.of("prepare", request), () -> {
+            CurrentCoupleLookup lookup = couples.getIfAvailable();
+            if (lookup == null || !lookup.lockCurrent(actor.userId(), coupleId)) {
+                throw error(HttpStatus.FORBIDDEN, "COUPLE_CONTEXT_CHANGED", "현재 커플 연결이 변경되었습니다.");
+            }
             validateRoles(actor.couple(), request);
             Route route = request.routeId() == null ? null : loadRoute(actor, request.routeId());
             DriveRow drive = new DriveRow(

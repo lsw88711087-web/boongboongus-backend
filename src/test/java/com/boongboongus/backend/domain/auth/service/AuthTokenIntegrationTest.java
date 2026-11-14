@@ -278,6 +278,343 @@ class AuthTokenIntegrationTest {
                 .param("id", owner).query(Long.class).single()).isEqualTo(1);
     }
 
+    @Test
+    void currentCoupleDistinguishesUnlinkedDisconnectedAndConnected() throws Exception {
+        String user = createLogoutUser(-101);
+        String partner = createLogoutUser(-102);
+        String bearer = "Bearer " + tokens.access(user, "session", Instant.now());
+        var request = org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/v1/couples/me");
+
+        mvc.perform(request).andExpect(status().isUnauthorized());
+        request.header("Authorization", bearer);
+        mvc.perform(request).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.connectionStatus").value("UNLINKED"))
+                .andExpect(jsonPath("$.data.couple").value(org.hamcrest.Matchers.nullValue()));
+
+        String couple = "cpl_" + UUID.randomUUID();
+        jdbc.sql("""
+                INSERT INTO couples (id, first_member_id, second_member_id, start_date, mascot_name)
+                VALUES (:id, :user, :partner, :date, '붕붕이')
+                """).param("id", couple).param("user", user).param("partner", partner)
+                .param("date", java.time.LocalDate.now(java.time.ZoneId.of("Asia/Seoul"))).update();
+
+        mvc.perform(request).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.connectionStatus").value("CONNECTED"))
+                .andExpect(jsonPath("$.data.couple.id").value(couple))
+                .andExpect(jsonPath("$.data.couple.daysTogether").value(1))
+                .andExpect(jsonPath("$.data.couple.members[0].id").value(user))
+                .andExpect(jsonPath("$.data.couple.members[1].id").value(partner));
+        jdbc.sql("UPDATE couples SET disconnected_at = CURRENT_TIMESTAMP WHERE id = :id").param("id", couple).update();
+
+        mvc.perform(request).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.connectionStatus").value("DISCONNECTED"))
+                .andExpect(jsonPath("$.data.couple").value(org.hamcrest.Matchers.nullValue()));
+    }
+
+    @Test
+    void issuesOneActiveInviteAndReplacesExpiredInvite() throws Exception {
+        String user = createLogoutUser(-111);
+        String bearer = "Bearer " + tokens.access(user, "session", Instant.now());
+        String firstKey = UUID.randomUUID().toString();
+        mvc.perform(post("/api/v1/couple-invites").header("Idempotency-Key", firstKey))
+                .andExpect(status().isUnauthorized());
+        var first = json.readTree(mvc.perform(post("/api/v1/couple-invites")
+                .header("Authorization", bearer).header("Idempotency-Key", firstKey))
+                .andExpect(status().isCreated()).andExpect(jsonPath("$.data.status").value("ACTIVE"))
+                .andReturn().getResponse().getContentAsString()).get("data");
+        String id = first.get("inviteId").asText();
+        String code = first.get("code").asText();
+        for (String key : java.util.List.of(firstKey, UUID.randomUUID().toString())) {
+            mvc.perform(post("/api/v1/couple-invites").header("Authorization", bearer).header("Idempotency-Key", key))
+                    .andExpect(status().isCreated()).andExpect(jsonPath("$.data.inviteId").value(id))
+                    .andExpect(jsonPath("$.data.code").value(code));
+        }
+
+        jdbc.sql("UPDATE couple_invites SET expires_at = :past WHERE id = :id")
+                .param("past", java.time.OffsetDateTime.now().minusSeconds(1)).param("id", id).update();
+        mvc.perform(post("/api/v1/couple-invites").header("Authorization", bearer)
+                .header("Idempotency-Key", UUID.randomUUID().toString()))
+                .andExpect(status().isCreated()).andExpect(jsonPath("$.data.inviteId").value(org.hamcrest.Matchers.not(id)));
+        assertThat(jdbc.sql("SELECT COUNT(*) FROM couple_invites WHERE owner_user_id = :id AND active_slot = 1")
+                .param("id", user).query(Long.class).single()).isEqualTo(1);
+    }
+
+    @Test
+    void getsOnlyOwnUnexpiredInvite() throws Exception {
+        String user = createLogoutUser(-112);
+        String other = createLogoutUser(-113);
+        String bearer = "Bearer " + tokens.access(user, "session", Instant.now());
+        String otherBearer = "Bearer " + tokens.access(other, "session", Instant.now());
+        String path = "/api/v1/couple-invites/me";
+        var get = org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(path);
+        mvc.perform(get).andExpect(status().isUnauthorized());
+        mvc.perform(get.header("Authorization", bearer)).andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("INVITE_NOT_FOUND"));
+
+        var created = json.readTree(mvc.perform(post("/api/v1/couple-invites")
+                .header("Authorization", bearer).header("Idempotency-Key", UUID.randomUUID().toString()))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()).get("data");
+        mvc.perform(get).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.code").value(created.get("code").asText()))
+                .andExpect(jsonPath("$.data.expiresAt").value(created.get("expiresAt").asText()));
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(path)
+                .header("Authorization", otherBearer)).andExpect(status().isNotFound());
+
+        jdbc.sql("UPDATE couple_invites SET expires_at = :past WHERE owner_user_id = :user")
+                .param("past", java.time.OffsetDateTime.now().minusSeconds(1)).param("user", user).update();
+        mvc.perform(get).andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("INVITE_NOT_FOUND"));
+    }
+
+    @Test
+    void connectsBothMembersAndConsumesInviteExactlyOnce() throws Exception {
+        String owner = createLogoutUser(-114);
+        String guest = createLogoutUser(-115);
+        String outsider = createLogoutUser(-116);
+        String ownerToken = "Bearer " + tokens.access(owner, "session", Instant.now());
+        String guestToken = "Bearer " + tokens.access(guest, "session", Instant.now());
+        String outsiderToken = "Bearer " + tokens.access(outsider, "session", Instant.now());
+        jdbc.sql("UPDATE auth_users SET mascot_name = '발급자 이름' WHERE id = :id").param("id", owner).update();
+        jdbc.sql("UPDATE auth_users SET mascot_name = '참가자 이름' WHERE id = :id").param("id", guest).update();
+
+        var issued = json.readTree(mvc.perform(post("/api/v1/couple-invites").header("Authorization", ownerToken)
+                .header("Idempotency-Key", UUID.randomUUID().toString())).andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString()).get("data");
+        String code = issued.get("code").asText();
+        mvc.perform(connect(ownerToken, UUID.randomUUID().toString(), code)).andExpect(status().is(422))
+                .andExpect(jsonPath("$.error.code").value("SELF_INVITE"));
+
+        String key = UUID.randomUUID().toString();
+        var created = json.readTree(mvc.perform(connect(guestToken, key, " " + code.toUpperCase(java.util.Locale.ROOT) + " "))
+                .andExpect(status().isCreated()).andExpect(jsonPath("$.data.mascotName").value("발급자 이름"))
+                .andExpect(jsonPath("$.data.daysTogether").value(1))
+                .andReturn().getResponse().getContentAsString()).get("data");
+        String coupleId = created.get("id").asText();
+        mvc.perform(connect(guestToken, key, code)).andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.id").value(coupleId));
+        mvc.perform(connect(outsiderToken, UUID.randomUUID().toString(), code)).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("INVITE_CONSUMED"));
+
+        for (String bearer : java.util.List.of(ownerToken, guestToken)) {
+            mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/v1/couples/me")
+                    .header("Authorization", bearer)).andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.connectionStatus").value("CONNECTED"))
+                    .andExpect(jsonPath("$.data.couple.id").value(coupleId));
+        }
+    }
+
+    private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder connect(
+            String bearer, String key, String code) {
+        return post("/api/v1/couples").header("Authorization", bearer).header("Idempotency-Key", key)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(java.util.Map.of("code", code)));
+    }
+
+    @Test
+    void disconnectRejectsActiveDriveAndKeepsNewConnectionOnStaleRetry() throws Exception {
+        String user = createLogoutUser(-117);
+        String partner = createLogoutUser(-118);
+        String outsider = createLogoutUser(-119);
+        String couple = "cpl_" + UUID.randomUUID();
+        String bearer = "Bearer " + tokens.access(user, "session", Instant.now());
+        jdbc.sql("""
+                INSERT INTO couples (id, first_member_id, second_member_id, start_date, mascot_name)
+                VALUES (:id, :user, :partner, CURRENT_DATE, '붕붕이')
+                """).param("id", couple).param("user", user).param("partner", partner).update();
+        var request = org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/api/v1/couples/me")
+                .header("Authorization", bearer).header("X-Couple-Id", couple);
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/api/v1/couples/me")
+                .header("Authorization", "Bearer " + tokens.access(outsider, "session", Instant.now()))
+                .header("X-Couple-Id", couple)).andExpect(status().isForbidden());
+        String drive = "drv_" + UUID.randomUUID();
+        jdbc.sql("""
+                INSERT INTO drives (id, couple_id, title, status, active_slot, driver_user_id, passenger_user_id,
+                    recorder_user_id, control_version)
+                VALUES (:id, :couple, 'test', 'PREPARING', 1, :user, :partner, :user, 1)
+                """).param("id", drive).param("couple", couple).param("user", user).param("partner", partner).update();
+        mvc.perform(request).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("ACTIVE_DRIVE_EXISTS"));
+        jdbc.sql("UPDATE drives SET status = 'CANCELLED', active_slot = NULL WHERE id = :id").param("id", drive).update();
+        mvc.perform(request).andExpect(status().isNoContent());
+        mvc.perform(request).andExpect(status().isNoContent());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/v1/couples/me")
+                .header("Authorization", bearer)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.connectionStatus").value("DISCONNECTED"));
+        String newCouple = "cpl_" + UUID.randomUUID();
+        jdbc.sql("""
+                INSERT INTO couples (id, first_member_id, second_member_id, start_date, mascot_name)
+                VALUES (:id, :user, :partner, CURRENT_DATE, '새 관계')
+                """).param("id", newCouple).param("user", user).param("partner", outsider).update();
+        mvc.perform(request).andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("COUPLE_CONTEXT_CHANGED"));
+        assertThat(jdbc.sql("SELECT COUNT(*) FROM couples WHERE id = :id AND disconnected_at IS NULL")
+                .param("id", newCouple).query(Long.class).single()).isEqualTo(1);
+    }
+
+    @Test
+    void restoresOnlySamePairAndPreservesPreviousCoupleValues() throws Exception {
+        String owner = createLogoutUser(-120);
+        String partner = createLogoutUser(-121);
+        String other = createLogoutUser(-122);
+        String ownerBearer = "Bearer " + tokens.access(owner, "session", Instant.now());
+        String partnerBearer = "Bearer " + tokens.access(partner, "session", Instant.now());
+        String otherBearer = "Bearer " + tokens.access(other, "session", Instant.now());
+        String priorId = "cpl_" + UUID.randomUUID();
+
+        jdbc.sql("""
+                INSERT INTO couples (id, first_member_id, second_member_id, start_date, mascot_name,
+                    version, disconnected_at)
+                VALUES (:id, :owner, :partner, DATE '2000-01-01', '기존 이름', 4, CURRENT_TIMESTAMP)
+                """).param("id", priorId).param("owner", owner).param("partner", partner).update();
+        jdbc.sql("UPDATE auth_users SET mascot_name = '새 후보' WHERE id = :id").param("id", owner).update();
+
+        String code = json.readTree(mvc.perform(post("/api/v1/couple-invites").header("Authorization", ownerBearer)
+                .header("Idempotency-Key", UUID.randomUUID().toString())).andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString()).get("data").get("code").asText();
+        mvc.perform(restore(otherBearer, UUID.randomUUID().toString(), code)).andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("COUPLE_HISTORY_NOT_FOUND"));
+        mvc.perform(connect(partnerBearer, UUID.randomUUID().toString(), code)).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("COUPLE_RESTORE_REQUIRED"));
+
+        String key = UUID.randomUUID().toString();
+        mvc.perform(restore(partnerBearer, key, code)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id").value(priorId))
+                .andExpect(jsonPath("$.data.startDate").value("2000-01-01"))
+                .andExpect(jsonPath("$.data.mascotName").value("기존 이름"))
+                .andExpect(jsonPath("$.data.version").value(5));
+        mvc.perform(restore(partnerBearer, key, code)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.version").value(5));
+        mvc.perform(restore(partnerBearer, UUID.randomUUID().toString(), code)).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("INVITE_CONSUMED"));
+    }
+
+    private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder restore(
+            String bearer, String key, String code) {
+        return post("/api/v1/couples/restore").header("Authorization", bearer).header("Idempotency-Key", key)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(java.util.Map.of("code", code)));
+    }
+
+    @Test
+    void updatesCoupleStartDateForEitherMemberWithCurrentVersion() throws Exception {
+        String user = createLogoutUser(-123);
+        String partner = createLogoutUser(-124);
+        String outsider = createLogoutUser(-125);
+        String couple = "cpl_" + UUID.randomUUID();
+        var today = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Seoul"));
+        jdbc.sql("""
+                INSERT INTO couples (id, first_member_id, second_member_id, start_date, mascot_name)
+                VALUES (:id, :user, :partner, :date, '붕붕이')
+                """).param("id", couple).param("user", user).param("partner", partner).param("date", today).update();
+        var yesterday = today.minusDays(1);
+
+        mvc.perform(patchStartDate(null, couple, yesterday, 1)).andExpect(status().isUnauthorized());
+        mvc.perform(patchStartDate(outsider, couple, yesterday, 1)).andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("COUPLE_REQUIRED"));
+        mvc.perform(patchStartDate(user, "old-couple", yesterday, 1)).andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("COUPLE_CONTEXT_CHANGED"));
+        mvc.perform(patchStartDate(user, couple, today.plusDays(1), 1)).andExpect(status().is(422))
+                .andExpect(jsonPath("$.error.code").value("INVALID_START_DATE"));
+        mvc.perform(patchStartDate(user, couple, yesterday, 1)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.startDate").value(yesterday.toString()))
+                .andExpect(jsonPath("$.data.daysTogether").value(2))
+                .andExpect(jsonPath("$.data.version").value(2));
+        mvc.perform(patchStartDate(partner, couple, today, 1)).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("VERSION_CONFLICT"));
+        mvc.perform(patchStartDate(partner, couple, today, 2)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.daysTogether").value(1))
+                .andExpect(jsonPath("$.data.version").value(3));
+    }
+
+    private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder patchStartDate(
+            String user, String couple, java.time.LocalDate date, int version) {
+        var request = org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch("/api/v1/couples/me")
+                .header("X-Couple-Id", couple).contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(java.util.Map.of("startDate", date, "expectedVersion", version)));
+        return user == null ? request : request.header("Authorization", "Bearer " + tokens.access(user, "session", Instant.now()));
+    }
+
+    @Test
+    void mascotNameUpdateSharesVersionWithStartDateUpdate() throws Exception {
+        String user = createLogoutUser(-126);
+        String partner = createLogoutUser(-127);
+        String couple = "cpl_" + UUID.randomUUID();
+        var today = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Seoul"));
+        jdbc.sql("""
+                INSERT INTO couples (id, first_member_id, second_member_id, start_date, mascot_name)
+                VALUES (:id, :user, :partner, :date, '붕붕이')
+                """).param("id", couple).param("user", user).param("partner", partner).param("date", today).update();
+
+        mvc.perform(patchMascotName(null, couple, "달콩이", 1)).andExpect(status().isUnauthorized());
+        mvc.perform(patchMascotName(user, couple, "가".repeat(21), 1)).andExpect(status().is(422));
+        mvc.perform(patchMascotName(user, couple, "  달콩이  ", 1)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.mascotName").value("달콩이"))
+                .andExpect(jsonPath("$.data.version").value(2));
+        mvc.perform(patchStartDate(partner, couple, today, 1)).andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("VERSION_CONFLICT"));
+        mvc.perform(patchMascotName(partner, couple, "별이", 2)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.mascotName").value("별이"))
+                .andExpect(jsonPath("$.data.version").value(3));
+    }
+
+    private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder patchMascotName(
+            String user, String couple, String name, int version) {
+        var request = org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .patch("/api/v1/couples/me/mascot-name").header("X-Couple-Id", couple)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsString(java.util.Map.of("name", name, "expectedVersion", version)));
+        return user == null ? request : request.header("Authorization", "Bearer " + tokens.access(user, "session", Instant.now()));
+    }
+
+    @Test
+    void replacesDeviceRegistrationAndOnlyLetsCurrentOwnerDeleteIt() throws Exception {
+        String first = createLogoutUser(-128);
+        String second = createLogoutUser(-129);
+        String firstBearer = "Bearer " + tokens.access(first, "session", Instant.now());
+        String secondBearer = "Bearer " + tokens.access(second, "session", Instant.now());
+        String device = "dev_" + UUID.randomUUID();
+        String path = "/api/v1/devices/" + device + "/push-token";
+        var put = org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put(path)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {"token":"test-push","platform":"ANDROID","enabled":false}
+                        """);
+        mvc.perform(put).andExpect(status().isUnauthorized());
+        mvc.perform(put.header("Authorization", firstBearer)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.accepted").value(true));
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put(path)
+                .header("Authorization", secondBearer).contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {"token":"replacement","platform":"IOS","enabled":true}
+                        """)).andExpect(status().isOk());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete(path)
+                .header("Authorization", firstBearer)).andExpect(status().isNoContent());
+        assertThat(jdbc.sql("SELECT user_id FROM device_push_tokens WHERE device_id = :id")
+                .param("id", device).query(String.class).single()).isEqualTo(second);
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete(path)
+                .header("Authorization", secondBearer)).andExpect(status().isNoContent());
+        assertThat(jdbc.sql("SELECT user_id FROM device_push_tokens WHERE device_id = :id")
+                .param("id", device).query(String.class).optional()).isEmpty();
+    }
+
+    @Test
+    void revokesOnlyOwnedUnusedInvite() throws Exception {
+        String owner = createLogoutUser(-130);
+        String other = createLogoutUser(-131);
+        String ownerBearer = "Bearer " + tokens.access(owner, "session", Instant.now());
+        String otherBearer = "Bearer " + tokens.access(other, "session", Instant.now());
+        var invite = json.readTree(mvc.perform(post("/api/v1/couple-invites").header("Authorization", ownerBearer)
+                .header("Idempotency-Key", UUID.randomUUID().toString())).andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString()).get("data");
+        String path = "/api/v1/couple-invites/" + invite.get("inviteId").asText();
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete(path)
+                .header("Authorization", otherBearer)).andExpect(status().isNotFound());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete(path)
+                .header("Authorization", ownerBearer)).andExpect(status().isNoContent());
+        mvc.perform(connect(otherBearer, UUID.randomUUID().toString(), invite.get("code").asText()))
+                .andExpect(status().is(422)).andExpect(jsonPath("$.error.code").value("INVALID_INVITE"));
+    }
+
     private String createLogoutUser(long kakaoId) {
         String id = "usr_" + UUID.randomUUID();
         jdbc.sql("INSERT INTO auth_users (id, kakao_id, nickname, onboarding_completed) VALUES (:id, :kakao, '', FALSE)")
