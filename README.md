@@ -28,6 +28,7 @@ chmod +x gradlew
 | 주소 | 용도 |
 | --- | --- |
 | http://localhost:8080/api/v1/health | API 응답 및 공통 응답 형식 확인 |
+| `POST /api/v1/auth/authorizations` | 카카오 로그인 시작 및 로그인 URL 발급 |
 | http://localhost:8080/api/v1/app-config | 로그인 전 앱 설정과 기능 활성화 여부 조회 |
 | http://localhost:8080/api/v1/legal-documents | 현재 약관 목록과 본문 조회 |
 | http://localhost:8080/api/v1/faqs | FAQ 질문과 답변 조회 |
@@ -41,7 +42,47 @@ chmod +x gradlew
 
 FAQ는 `src/main/resources/faqs.yml`의 `app.faq.items`에 `id`, `question`, `answer`, `order`를 등록하고 백엔드를 배포하면 반영됩니다. 조회 결과는 `order` 오름차순이고, 등록된 항목이 없으면 빈 목록을 반환합니다.
 
+
+### 카카오 인증 코드 교환
+
+`POST /api/v1/auth/token`에 `Idempotency-Key`(16~128자)와 `authSessionId`, `authorizationCode`, `state`, `codeVerifier`를 보냅니다. 카카오 설정의 Client Secret이 활성 상태라면 서버에 `KAKAO_LOGIN_CLIENT_SECRET`을 설정합니다. `AUTH_TOKEN_KEY`에는 32바이트 이상을 무작위로 생성해 Base64로 인코딩한 서버 키를 설정합니다. 키는 재시작 후에도 유지하며 Git에 올리지 않습니다.
+
+액세스 JWT는 30분, 랜덤 리프레시 토큰은 14일 동안 유효합니다. 리프레시 토큰 해시는 세션에 저장되며, 성공 응답은 동일 요청 재시도를 위해 암호화되어 24시간 동안 재사용됩니다. 로그인 시작 시도 소비, 회원 생성, 서비스 세션 저장은 한 DB 트랜잭션에서 처리합니다. 카카오 코드 교환 이후 응답을 저장하기 전에 장애가 나면 새 로그인 시도가 필요할 수 있습니다.
+
+호출 제한 및 만료 데이터 정리는 후속 작업입니다. 일반 로그아웃 시 기존 액세스 JWT는 만료까지 유효한 정책을 적용합니다.
+
+
+### 토큰 갱신
+
+`POST /api/v1/auth/refresh`에 `Idempotency-Key`(16~128자)와 `refreshToken`을 보냅니다. 성공 시 30분 액세스 JWT와 갱신 시점부터 14일간 유효한 새 리프레시 토큰을 반환합니다. 응답을 받지 못하면 동일 토큰과 키로 30초 안에 재시도할 수 있습니다. 이 조건을 벗어나 사용된 토큰이 다시 들어오면 해당 세션을 폐기합니다. 앱에서는 동시에 하나의 갱신 요청만 보내고 성공 시 두 토큰을 교체합니다.
+
+### 현재 기기 로그아웃
+
+`POST /api/v1/auth/logout`에 `Idempotency-Key`(16~128자), `refreshToken`, `deviceId`를 보냅니다. 서버는 해당 세션의 갱신을 막고, 지정한 기기의 푸시 등록이 세션 소유자에 속하면 해제합니다. 성공 또는 이미 종료된 세션은 본문 없이 `204`를 반환합니다. 앱은 성공 후 두 토큰을 지웁니다. 기존 액세스 JWT는 만료까지 유효합니다. 푸시 등록 API는 커플·기기 작업에서 연결합니다.
+
+### 내 계정 조회
+
+`GET /api/v1/me`에 `Authorization: Bearer <accessToken>`을 보내면 현재 회원 프로필을 반환합니다. 가입 절차를 아직 마치지 않은 회원도 조회할 수 있습니다. 액세스 JWT는 DB 조회 없이 검증하며, 프로필은 DB에서 읽습니다. 토큰이 없거나 유효하지 않으면 `401 AUTHENTICATION_REQUIRED`, 만료됐으면 `401 ACCESS_TOKEN_EXPIRED`를 반환합니다.
+
+### 가입 완료와 프로필 수정
+
+`PUT /api/v1/me/onboarding`은 Bearer 액세스 토큰, `nickname`, `birthDate`(미수집 시 null), `consents`를 받습니다. `GET /api/v1/legal-documents`와 같은 문서 설정에서 현재 `TERMS`·`PRIVACY` 버전을 확인합니다. 승인된 두 문서를 `src/main/resources/legal-documents.yml`에 등록해야 가입을 완료할 수 있습니다. 동의 이력과 가입 프로필은 함께 저장됩니다.
+
+`PATCH /api/v1/me`는 `nickname`과 `birthDate` 중 전달한 필드만 바꿉니다. `birthDate: null`은 생년월일을 지우고, 빈 요청과 미래 생년월일은 거절합니다. 두 API 모두 갱신된 내 프로필을 반환합니다.
+
+### 탈퇴용 카카오 본인 재인증
+
+`POST /api/v1/auth/reauth/authorizations`에 Bearer 액세스 토큰과 `Idempotency-Key`(16~128자)를 보내고, 본문에 `provider=KAKAO`, `redirectUri`, `codeChallenge`를 전달합니다. 현재 회원에 연결된 10분짜리 재인증 시도와 카카오 로그인 URL을 반환합니다.
+
+카카오 콜백 뒤 `POST /api/v1/auth/reauth`에 Bearer 액세스 토큰, 새 `Idempotency-Key`, `authSessionId`, `authorizationCode`, `state`, `codeVerifier`를 보냅니다. 카카오 계정이 현재 회원과 일치하면 탈퇴 목적의 5분짜리 `reauthToken`을 반환합니다. 계정이 다르면 `403 REAUTH_SUBJECT_MISMATCH`를 반환합니다. 계정 삭제와 증명 소비는 회원 탈퇴 API에서 연결합니다.
+
+### 회원 탈퇴 연동 상태
+
+`DELETE /api/v1/me`는 Bearer 액세스 토큰과 `X-Reauth-Token`으로 본인 증명을 확인합니다. 준비·진행·일시중단 주행이 있으면 `409 ACTIVE_DRIVE_EXISTS`입니다. 현재는 조건을 통과해도 `503 SERVICE_UNAVAILABLE`을 반환합니다. 카카오 및 연결된 공급자 해제, 주행 시작과의 동시 처리, 커플·개인 데이터 정리, 탈퇴 계정의 JWT 차단이 연결된 뒤에만 탈퇴를 완료합니다.
+
 ## PostgreSQL 개발 환경
+
+카카오 로그인을 시작하려면 서버의 `.env` 또는 환경변수에 `KAKAO_LOGIN_REST_API_KEY`와 `KAKAO_LOGIN_REDIRECT_URIS`를 설정합니다. 콜백 주소는 카카오디벨로퍼스에 등록한 값과 정확히 일치해야 하며, 여러 주소는 쉼표로 구분합니다. 요청에는 `provider=KAKAO`, `purpose=LOGIN`, `redirectUri`와 앱이 생성한 S256 `codeChallenge`(43자)를 보냅니다. 성공하면 `201`과 카카오 로그인 URL, `authSessionId`, `state`, 10분 후의 만료 시각을 반환합니다. Flyway는 로그인 시도를 저장할 `auth_sessions` 테이블을 생성합니다. 토큰 교환, 만료 세션 정리와 로그인 시작 요청의 호출 제한은 후속 작업입니다.
 
 기본 `local`과 `dev`는 PostgreSQL에 연결합니다. 위에서 만든 `.env`와 DB를 그대로 사용하며, `dev` 프로필로 실행할 때는 다음 명령을 사용합니다.
 
