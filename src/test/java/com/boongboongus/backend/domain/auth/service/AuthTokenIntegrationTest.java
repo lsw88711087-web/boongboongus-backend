@@ -40,6 +40,7 @@ class AuthTokenIntegrationTest {
     @Autowired private JdbcClient jdbc;
     @Autowired private JsonMapper json;
     @Autowired private ServiceTokens tokens;
+    @Autowired private com.boongboongus.backend.domain.job.service.JobService jobs;
     @MockitoBean private KakaoLoginClient kakao;
 
     @Test
@@ -710,6 +711,45 @@ class AuthTokenIntegrationTest {
         mvc.perform(disconnect).andExpect(status().isNoContent());
         mvc.perform(get).andExpect(status().isOk()).andExpect(jsonPath("$.data.items.length()").value(2))
                 .andExpect(jsonPath("$.data.items[0].type").value("COUPLE_DISCONNECTED"));
+    }
+
+    @Test
+    void cancelsOnlyOwnedJobAndRejectsLateCompletion() throws Exception {
+        String owner = createLogoutUser(-136);
+        String other = createLogoutUser(-137);
+        String ownerBearer = "Bearer " + tokens.access(owner, "session", Instant.now());
+        String otherBearer = "Bearer " + tokens.access(other, "session", Instant.now());
+        var kind = com.boongboongus.backend.domain.job.dto.JobResponse.Kind.PLAYLIST_GENERATION;
+        var job = jobs.enqueue(owner, kind);
+        String path = "/api/v1/jobs/" + job.id();
+        var get = org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(path);
+
+        mvc.perform(get).andExpect(status().isUnauthorized());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(path)
+                .header("Authorization", otherBearer)).andExpect(status().isNotFound());
+        mvc.perform(get.header("Authorization", ownerBearer)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("QUEUED"));
+        assertThat(jobs.start(job.id())).isTrue();
+        String key = UUID.randomUUID().toString();
+        mvc.perform(post(path + "/cancel").header("Authorization", otherBearer).header("Idempotency-Key", key))
+                .andExpect(status().isNotFound());
+        var cancel = post(path + "/cancel").header("Authorization", ownerBearer).header("Idempotency-Key", key);
+        mvc.perform(cancel).andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("CANCEL_REQUESTED"));
+        mvc.perform(cancel).andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("CANCEL_REQUESTED"));
+        assertThat(jobs.succeed(job.id(), "ply_late")).isFalse();
+        mvc.perform(get).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.resourceId").value(org.hamcrest.Matchers.nullValue()));
+
+        var completed = jobs.enqueue(owner, kind);
+        assertThat(jobs.start(completed.id())).isTrue();
+        assertThat(jobs.succeed(completed.id(), "ply_success")).isTrue();
+        mvc.perform(post("/api/v1/jobs/" + completed.id() + "/cancel")
+                .header("Authorization", ownerBearer).header("Idempotency-Key", UUID.randomUUID().toString()))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("JOB_ALREADY_FINISHED"));
+
+        jdbc.sql("UPDATE ai_jobs SET expires_at = :past WHERE id = :id")
+                .param("id", job.id()).param("past", java.time.OffsetDateTime.now().minusSeconds(1)).update();
+        mvc.perform(get).andExpect(status().isGone()).andExpect(jsonPath("$.error.code").value("JOB_EXPIRED"));
     }
 
     private String createLogoutUser(long kakaoId) {
