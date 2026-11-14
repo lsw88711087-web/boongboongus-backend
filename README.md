@@ -116,6 +116,12 @@ FAQ는 `src/main/resources/faqs.yml`의 `app.faq.items`에 `id`, `question`, `an
 - `PUT /api/v1/devices/{deviceId}/push-token`에 `token`, `platform`(IOS/ANDROID/WEB), `enabled`를 보냅니다. 동일 기기에서 계정이 바뀌면 등록이 현재 계정으로 이동합니다. 성공 응답은 `200`과 `accepted: true`입니다.
 - `DELETE /api/v1/devices/{deviceId}/push-token`은 내 등록만 삭제합니다. 다른 계정에 등록됐거나 등록이 없으면 `204`를 반환합니다. 세 API 모두 Bearer 토큰이 필요합니다.
 
+### 인앱 알림 조회와 읽음 처리
+
+`GET /api/v1/notifications`는 Bearer 토큰으로 본인의 미만료 알림을 최신순으로 반환합니다. `limit` 기본값은 20이며 1~100을 지원합니다. `unreadOnly=true`로 읽지 않은 항목만 조회할 수 있습니다. 다음 페이지에는 응답의 `nextCursor`와 같은 조회 조건을 사용합니다. 알림의 보관 기간은 30일이며 만료 항목을 정리합니다.
+
+`PATCH /api/v1/notifications/{notificationId}/read`는 요청 본문 없이 내 알림을 읽음 처리하고 갱신한 항목을 반환합니다. 이미 읽은 알림의 `readAt`은 유지합니다. 다른 회원의 알림이나 만료된 알림은 `404`입니다. 장소 공유, 커플 연결·복구·해제 시 상대 회원의 인앱 알림을 저장합니다. 홈의 미확인 알림 수에는 읽지 않은 미만료 알림만 포함됩니다. 소감 제출과 실제 푸시 전달은 해당 기능 연동 시 추가합니다.
+
 ## PostgreSQL 개발 환경
 
 카카오 로그인을 시작하려면 서버의 `.env` 또는 환경변수에 `KAKAO_LOGIN_REST_API_KEY`와 `KAKAO_LOGIN_REDIRECT_URIS`를 설정합니다. 콜백 주소는 카카오디벨로퍼스에 등록한 값과 정확히 일치해야 하며, 여러 주소는 쉼표로 구분합니다. 요청에는 `provider=KAKAO`, `purpose=LOGIN`, `redirectUri`와 앱이 생성한 S256 `codeChallenge`(43자)를 보냅니다. 성공하면 `201`과 카카오 로그인 URL, `authSessionId`, `state`, 10분 후의 만료 시각을 반환합니다. Flyway는 로그인 시도를 저장할 `auth_sessions` 테이블을 생성합니다. 토큰 교환, 만료 세션 정리와 로그인 시작 요청의 호출 제한은 후속 작업입니다.

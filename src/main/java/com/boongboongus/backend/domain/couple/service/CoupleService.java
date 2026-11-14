@@ -3,6 +3,7 @@ package com.boongboongus.backend.domain.couple.service;
 import com.boongboongus.backend.domain.couple.dto.CurrentCoupleResponse;
 import com.boongboongus.backend.domain.couple.dto.CurrentCoupleResponse.Status;
 import com.boongboongus.backend.domain.couple.repository.CoupleRepository;
+import com.boongboongus.backend.domain.notification.service.NotificationService;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
@@ -21,7 +22,11 @@ public class CoupleService implements CurrentCoupleLookup {
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Seoul");
     private final CoupleRepository couples;
 
-    CoupleService(CoupleRepository couples) {
+    private final NotificationService notifications;
+
+    CoupleService(CoupleRepository couples,
+            NotificationService notifications) {
+        this.notifications = notifications;
         this.couples = couples;
     }
 
@@ -52,6 +57,8 @@ public class CoupleService implements CurrentCoupleLookup {
                     HttpStatus.CONFLICT, "ACTIVE_DRIVE_EXISTS", "진행 중인 주행을 먼저 종료하거나 취소해 주세요.");
         }
         couples.disconnect(coupleId);
+        String partnerId = userId.equals(latest.first().id()) ? latest.second().id() : latest.first().id();
+        notifications.coupleChanged(userId, partnerId, coupleId, latest.version() + 1, false);
     }
 
     @Transactional

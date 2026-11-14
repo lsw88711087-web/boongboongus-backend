@@ -5,6 +5,7 @@ import com.boongboongus.backend.domain.couple.dto.CurrentCoupleResponse.Couple;
 import com.boongboongus.backend.domain.couple.repository.CoupleInviteRepository;
 import com.boongboongus.backend.domain.couple.repository.CoupleRepository;
 import com.boongboongus.backend.domain.couple.repository.CoupleRepository.Candidates;
+import com.boongboongus.backend.domain.notification.service.NotificationService;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -21,9 +22,12 @@ public class CoupleConnectService {
     private final CoupleRepository couples;
     private final CoupleService views;
     private final IdempotentWrite idempotency;
+    private final NotificationService notifications;
 
     CoupleConnectService(CoupleInviteRepository invites, CoupleRepository couples, CoupleService views,
-            IdempotentWrite idempotency) {
+            IdempotentWrite idempotency,
+            NotificationService notifications) {
+        this.notifications = notifications;
         this.invites = invites;
         this.couples = couples;
         this.views = views;
@@ -80,7 +84,9 @@ public class CoupleConnectService {
         }
         invites.consume(invite.id(), Instant.now());
         invites.deactivateForOwner(userId);
-        return views.getCurrent(userId).couple();
+        Couple connected = views.getCurrent(userId).couple();
+        notifications.coupleChanged(userId, owner, connected.id(), connected.version(), true);
+        return connected;
     }
 
     private void create(String owner, String userId) {

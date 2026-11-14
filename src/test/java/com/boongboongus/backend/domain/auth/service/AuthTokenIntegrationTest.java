@@ -615,6 +615,103 @@ class AuthTokenIntegrationTest {
                 .andExpect(status().is(422)).andExpect(jsonPath("$.error.code").value("INVALID_INVITE"));
     }
 
+    @Test
+    void listsOnlyUnexpiredOwnedNotificationsAndKeepsFirstReadTime() throws Exception {
+        String owner = createLogoutUser(-132);
+        String other = createLogoutUser(-133);
+        String bearer = "Bearer " + tokens.access(owner, "session", Instant.now());
+        var now = java.time.OffsetDateTime.now();
+        String first = createNotification(owner, other, now.minusMinutes(1), now.plusDays(29));
+        String second = createNotification(owner, null, now.minusMinutes(2), now.plusDays(29));
+        String expired = createNotification(owner, null, now.minusDays(31), now.minusDays(1));
+        String foreign = createNotification(other, owner, now, now.plusDays(30));
+
+        String path = "/api/v1/notifications";
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(path))
+                .andExpect(status().isUnauthorized());
+        var page = json.readTree(mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(path)
+                .header("Authorization", bearer).param("limit", "1")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].id").value(first))
+                .andExpect(jsonPath("$.data.items[0].sender.id").value(other))
+                .andExpect(jsonPath("$.data.hasMore").value(true))
+                .andReturn().getResponse().getContentAsString()).get("data");
+        String cursor = page.get("nextCursor").asText();
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(path)
+                .header("Authorization", bearer).param("cursor", cursor)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.items[0].id").value(second))
+                .andExpect(jsonPath("$.data.items[0].sender").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$.data.nextCursor").value(org.hamcrest.Matchers.nullValue()));
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(path)
+                .header("Authorization", bearer).param("cursor", cursor).param("unreadOnly", "true"))
+                .andExpect(status().isBadRequest());
+
+        for (String unavailable : java.util.List.of(foreign, expired)) {
+            mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch(
+                    path + "/" + unavailable + "/read").header("Authorization", bearer))
+                    .andExpect(status().isNotFound());
+        }
+        var read = org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch(path + "/" + first + "/read")
+                .header("Authorization", bearer);
+        String readAt = json.readTree(mvc.perform(read).andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString()).get("data").get("readAt").asText();
+        assertThat(Instant.parse(readAt)).isBeforeOrEqualTo(Instant.now());
+        mvc.perform(read).andExpect(status().isOk()).andExpect(jsonPath("$.data.readAt").value(readAt));
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(path)
+                .header("Authorization", bearer).param("unreadOnly", "true")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.items[0].id").value(second));
+    }
+
+    private String createNotification(String recipient, String sender, java.time.OffsetDateTime createdAt,
+            java.time.OffsetDateTime expiresAt) {
+        String id = "ntf_" + UUID.randomUUID();
+        jdbc.sql("""
+                INSERT INTO notifications (id, recipient_user_id, sender_user_id, type, title, body,
+                    target_type, target_id, created_at, expires_at)
+                VALUES (:id, :recipient, :sender, 'PLACE_SHARED', '장소 공유', '장소를 확인해 보세요.',
+                    'PLACE', 'plc_test', :createdAt, :expiresAt)
+                """).param("id", id).param("recipient", recipient).param("sender", sender, java.sql.Types.VARCHAR)
+                .param("createdAt", createdAt).param("expiresAt", expiresAt).update();
+        return id;
+    }
+
+    @Test
+    void coupleEventsAppearOnceAndHomeReportsUnreadCount() throws Exception {
+        String owner = createLogoutUser(-134);
+        String guest = createLogoutUser(-135);
+        String ownerBearer = "Bearer " + tokens.access(owner, "session", Instant.now());
+        String guestBearer = "Bearer " + tokens.access(guest, "session", Instant.now());
+        String code = json.readTree(mvc.perform(post("/api/v1/couple-invites").header("Authorization", ownerBearer)
+                .header("Idempotency-Key", UUID.randomUUID().toString())).andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString()).get("data").get("code").asText();
+        String key = UUID.randomUUID().toString();
+        String couple = json.readTree(mvc.perform(connect(guestBearer, key, code)).andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString()).get("data").get("id").asText();
+        mvc.perform(connect(guestBearer, key, code)).andExpect(status().isCreated());
+
+        var get = org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/v1/notifications")
+                .header("Authorization", ownerBearer);
+        String id = json.readTree(mvc.perform(get).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.items[0].type").value("COUPLE_CONNECTED"))
+                .andReturn().getResponse().getContentAsString()).get("data").get("items").get(0).get("id").asText();
+        var home = org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/v1/home")
+                .header("Authorization", ownerBearer);
+        mvc.perform(home).andExpect(status().isOk()).andExpect(jsonPath("$.data.unreadNotificationCount").value(1));
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch(
+                "/api/v1/notifications/" + id + "/read").header("Authorization", ownerBearer))
+                .andExpect(status().isOk());
+        mvc.perform(home).andExpect(status().isOk()).andExpect(jsonPath("$.data.unreadNotificationCount").value(0));
+
+        var disconnect = org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/api/v1/couples/me")
+                .header("Authorization", guestBearer).header("X-Couple-Id", couple);
+        mvc.perform(disconnect).andExpect(status().isNoContent());
+        mvc.perform(disconnect).andExpect(status().isNoContent());
+        mvc.perform(get).andExpect(status().isOk()).andExpect(jsonPath("$.data.items.length()").value(2))
+                .andExpect(jsonPath("$.data.items[0].type").value("COUPLE_DISCONNECTED"));
+    }
+
     private String createLogoutUser(long kakaoId) {
         String id = "usr_" + UUID.randomUUID();
         jdbc.sql("INSERT INTO auth_users (id, kakao_id, nickname, onboarding_completed) VALUES (:id, :kakao, '', FALSE)")
