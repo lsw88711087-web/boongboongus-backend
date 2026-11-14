@@ -15,9 +15,11 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.AfterAll;
@@ -56,6 +58,7 @@ class PlaceSearchRouteIntegrationTest {
             {"placeId":"plc_seoul_forest","name":"클라이언트 예시","address":"","coordinate":{"latitude":0,"longitude":0}}
             """;
     private static final AtomicInteger DIRECTION_CALLS = new AtomicInteger();
+    private static final AtomicReference<String> PARKING_RESPONSE = new AtomicReference<>();
     private static HttpServer server;
 
     @Autowired MockMvc mvc;
@@ -66,6 +69,7 @@ class PlaceSearchRouteIntegrationTest {
     static void configure(DynamicPropertyRegistry registry) throws IOException {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/v2/local/search/keyword.json", PlaceSearchRouteIntegrationTest::keyword);
+        server.createContext("/v2/local/search/category.json", PlaceSearchRouteIntegrationTest::parking);
         server.createContext("/v2/local/geo/coord2address.json", PlaceSearchRouteIntegrationTest::address);
         server.createContext("/v1/directions", PlaceSearchRouteIntegrationTest::directions);
         server.start();
@@ -143,6 +147,26 @@ class PlaceSearchRouteIntegrationTest {
                 .andExpect(jsonPath("$.data.address").value((Object) null));
         mvc.perform(get(path).principal(() -> DRIVER).param("latitude", "-1").param("longitude", "127"))
                 .andExpect(status().isServiceUnavailable());
+    }
+
+    @Test
+    void placeDetailShowsNearbyParkingAndStillLoadsWhenParkingIsUnavailable() throws Exception {
+        String path = API + "/places/plc_seoul_forest";
+        PARKING_RESPONSE.set("""
+                {"documents":[{"place_name":"서울숲 인근 주차장","distance":"200"}]}
+                """);
+        mvc.perform(get(path).principal(() -> DRIVER).param("latitude", "37.5").param("longitude", "127"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.parkingInfo").value("서울숲 인근 주차장 · 목적지에서 200m"));
+
+        PARKING_RESPONSE.set("{\"documents\":[]}");
+        mvc.perform(get(path).principal(() -> DRIVER)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.parkingInfo").value((Object) null));
+
+        PARKING_RESPONSE.set(null);
+        mvc.perform(get(path).principal(() -> DRIVER)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.place.id").value("plc_seoul_forest"))
+                .andExpect(jsonPath("$.data.parkingInfo").value((Object) null));
     }
 
     @Test
@@ -230,6 +254,19 @@ class PlaceSearchRouteIntegrationTest {
                     "region_1depth_name":"서울","region_2depth_name":"성동구"},"address":null}]}
                     """);
         }
+    }
+
+    private static void parking(HttpExchange exchange) throws IOException {
+        var parameters = List.of(exchange.getRequestURI().getRawQuery().split("&"));
+        if (!"GET".equals(exchange.getRequestMethod())
+                || !"KakaoAK fake-local-test-key".equals(exchange.getRequestHeaders().getFirst("Authorization"))
+                || !parameters.containsAll(List.of("category_group_code=PK6", "x=127.0417982", "y=37.5430717",
+                        "radius=500", "sort=distance", "size=1"))) {
+            respond(exchange, 400, "{}");
+            return;
+        }
+        String body = PARKING_RESPONSE.get();
+        respond(exchange, body == null ? 503 : 200, body == null ? "{}" : body);
     }
 
     private static void directions(HttpExchange exchange) throws IOException {

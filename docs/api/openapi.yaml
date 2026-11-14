@@ -2077,7 +2077,9 @@ paths:
       description: '**상태:** 설계 초안 · **접근:** 로그인 필수
 
 
-        사진, 소개, 주차, 추천 시간, 주요 경로 제공. 위치 없으면 예상 시간·경로 미리보기 null. 사진 목록은 기본사진 대체 가능, 공급자 출처·이용조건은 별도 확인.
+        사진, 소개, 주차, 추천 시간, 주요 경로 정보를 제공한다. 예상 소요시간은 출발지와 목적지로 POST /routes를 호출해 응답의 durationSeconds를 사용한다.
+        등록된 주차 안내가 없으면 목적지 좌표를 기준으로 반경 500m 안에서 카카오 로컬 주차장(PK6)을 검색하여 가장 가까운 주차장 이름과 거리를 표시한다.
+        검색 결과가 없거나 카카오 로컬을 사용할 수 없으면 parkingInfo는 null이다. 사진 목록은 기본사진으로 대체할 수 있다.
 
 
         **근거:** OFF p4-5 · [Figma 97:2513](https://www.figma.com/design/iVcryRTtlYHzHq2JM5wyHQ/?node-id=97-2513)
@@ -2109,17 +2111,17 @@ paths:
                     category: SEA
                     hashtags:
                     - 야경
-                    estimatedDurationSeconds: 1800
+                    estimatedDurationSeconds: null
                     distanceMeters: 3200
                     isFavorite: false
                   photos:
                   - https://assets.example.invalid/image.jpg
                   introduction: 함께 야경을 즐기기 좋은 곳이에요.
-                  parkingInfo: 공영 주차장 이용
+                  parkingInfo: 인근 주차장 · 목적지에서 200m
                   recommendedVisitTime: 해 질 무렵
                   mainRoads:
                   - 올림픽대로
-                  previewRouteId: rte_01
+                  previewRouteId: null
                 meta:
                   requestId: req_01
                   serverTime: '2026-11-02T07:00:00Z'
@@ -10355,8 +10357,8 @@ components:
           type:
           - string
           - 'null'
-          example: 공영 주차장 이용
-          description: ''
+          example: 인근 주차장 · 목적지에서 200m
+          description: 등록된 안내 또는 카카오 로컬에서 찾은 인근 주차장 안내. 카카오 검색 결과의 거리는 목적지 기준 직선거리이며, 요금과 실시간 빈자리 정보는 포함하지 않는다.
         recommendedVisitTime:
           type:
           - string
