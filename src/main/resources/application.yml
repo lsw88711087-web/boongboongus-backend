@@ -6,6 +6,7 @@ spring:
       - optional:file:.env[.properties]
       - classpath:legal-documents.yml
       - classpath:faqs.yml
+      - classpath:dj-tracks.yml
   profiles:
     default: local
   jpa:

@@ -173,6 +173,15 @@ class DrivePreparationStore {
                 .list();
     }
 
+    Optional<Coordinate> latestCoordinate(String driveId) {
+        return jdbc.sql("""
+                SELECT latitude, longitude FROM drive_gps_samples
+                WHERE drive_id = :id AND latitude IS NOT NULL AND longitude IS NOT NULL
+                ORDER BY recorded_at DESC, sequence DESC LIMIT 1
+                """).param("id", driveId)
+                .query((row, index) -> new Coordinate(row.getDouble("latitude"), row.getDouble("longitude"))).optional();
+    }
+
     NavigableMap<Integer, DriveGps.Sample> gpsHistory(String driveId) {
         var samples = new TreeMap<Integer, DriveGps.Sample>();
         jdbc.sql("SELECT sequence, recorded_at, latitude, longitude FROM drive_gps_samples WHERE drive_id = :id")

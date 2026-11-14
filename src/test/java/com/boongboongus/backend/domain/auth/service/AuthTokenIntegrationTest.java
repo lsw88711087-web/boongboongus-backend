@@ -25,6 +25,17 @@ import tools.jackson.databind.json.JsonMapper;
 
 @SpringBootTest(properties = {
         "spring.config.import=classpath:legal-documents-test.yml",
+        "GROQ_API_KEY=", "SPOTIFY_CLIENT_ID=", "SPOTIFY_CLIENT_SECRET=",
+        "app.dj.tracks[0].id=trk_test",
+        "app.dj.tracks[0].title=Test track",
+        "app.dj.tracks[0].artist=Test artist",
+        "app.dj.tracks[0].duration-seconds=200",
+        "app.dj.tracks[0].provider-track-id=test01",
+        "app.dj.tracks[0].provider-uri=test:track:01",
+        "app.dj.tracks[0].external-url=https://music.example.invalid/track/01",
+        "app.dj.tracks[0].moods[0]=ROMANTIC",
+        "app.dj.tracks[0].weather[0]=SUNNY",
+        "app.dj.tracks[0].genres[0]=K_POP",
         "app.auth.kakao.rest-api-key=test-kakao-client",
         "app.auth.token-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
         "app.auth.kakao.redirect-uris[0]=https://app.example.invalid/callback"
@@ -750,6 +761,121 @@ class AuthTokenIntegrationTest {
         jdbc.sql("UPDATE ai_jobs SET expires_at = :past WHERE id = :id")
                 .param("id", job.id()).param("past", java.time.OffsetDateTime.now().minusSeconds(1)).update();
         mvc.perform(get).andExpect(status().isGone()).andExpect(jsonPath("$.error.code").value("JOB_EXPIRED"));
+    }
+
+    @Test
+    void generatesPlaylistOnceAndRestrictsDetailToOwner() throws Exception {
+        String owner = createLogoutUser(-138);
+        String other = createLogoutUser(-139);
+        String bearer = "Bearer " + tokens.access(owner, "session", Instant.now());
+        String otherBearer = "Bearer " + tokens.access(other, "session", Instant.now());
+        String key = UUID.randomUUID().toString();
+        String body = """
+                {"moods":["ROMANTIC"],"weather":"SUNNY","genres":["K_POP"]}
+                """;
+        var request = post("/api/v1/playlists").contentType(MediaType.APPLICATION_JSON)
+                .header("Authorization", bearer).header("Idempotency-Key", key);
+        mvc.perform(request.content(body.replace("ROMANTIC", "UNKNOWN")))
+                .andExpect(status().isUnprocessableContent());
+        mvc.perform(request.content(body.replace("ROMANTIC", "ROMANTIC\",\"ROMANTIC")))
+                .andExpect(status().isUnprocessableContent());
+        var first = mvc.perform(request.content(body)).andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.data.kind").value("PLAYLIST_GENERATION"))
+                .andReturn().getResponse().getContentAsString();
+        String id = json.readTree(first).path("data").path("id").asText();
+        mvc.perform(request.content(body)).andExpect(status().isAccepted()).andExpect(jsonPath("$.data.id").value(id));
+        mvc.perform(request.content(body.replace("SUNNY", "RAIN"))).andExpect(status().isConflict());
+
+        String jobPath = "/api/v1/jobs/" + id;
+        var getJob = org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(jobPath)
+                .header("Authorization", bearer);
+        var job = jobs.get(owner, id);
+        long deadline = System.nanoTime() + java.time.Duration.ofSeconds(10).toNanos();
+        while ((job.status().name().equals("QUEUED") || job.status().name().equals("RUNNING"))
+                && System.nanoTime() < deadline) {
+            Thread.sleep(50);
+            job = jobs.get(owner, id);
+        }
+        mvc.perform(getJob).andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("SUCCEEDED"));
+        String detail = "/api/v1/playlists/" + job.resourceId();
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(detail)
+                .header("Authorization", otherBearer)).andExpect(status().isNotFound());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(detail)
+                .header("Authorization", bearer)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.targetDurationSeconds").value(3600))
+                .andExpect(jsonPath("$.data.tracks[0].id").value("trk_test"));
+    }
+
+    @Test
+    void permitsBothDriveParticipantsToEditOneSharedPlaylist() throws Exception {
+        String driver = createLogoutUser(-140);
+        String passenger = createLogoutUser(-141);
+        String outsider = createLogoutUser(-142);
+        jdbc.sql("""
+                INSERT INTO couples (id, first_member_id, second_member_id, start_date, mascot_name)
+                VALUES ('cpl_edit', :driver, :passenger, CURRENT_DATE, 'test')
+                """).param("driver", driver).param("passenger", passenger).update();
+        jdbc.sql("""
+                INSERT INTO drives (id, couple_id, title, status, active_slot, driver_user_id,
+                    passenger_user_id, recorder_user_id, control_version)
+                VALUES ('drv_edit', 'cpl_edit', 'test', 'PREPARING', 1, :driver, :passenger, :driver, 1)
+                """).param("driver", driver).param("passenger", passenger).update();
+        jdbc.sql("""
+                INSERT INTO playlists (id, owner_user_id, drive_id, result_snapshot, created_at)
+                VALUES ('ply_edit', :driver, 'drv_edit', :snapshot, CURRENT_TIMESTAMP)
+                """).param("driver", driver).param("snapshot", """
+                        {"id":"ply_edit","title":"Test","moods":["ROMANTIC"],"weather":"SUNNY",
+                         "genres":[],"targetDurationSeconds":3600,"trackCount":2,"durationSeconds":500,
+                         "savedByMe":false,"createdAt":"2026-11-14T00:00:00Z","version":1,
+                         "tracks":[{"id":"a","title":"A","artist":"Test","durationSeconds":200,"order":0},
+                                   {"id":"b","title":"B","artist":"Test","durationSeconds":300,"order":1}]}
+                        """).update();
+        var endpoint = "/api/v1/playlists/ply_edit/tracks";
+        var edit = org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch(endpoint)
+                .contentType(MediaType.APPLICATION_JSON);
+        mvc.perform(edit.header("Authorization", "Bearer " + tokens.access(outsider, "session", Instant.now()))
+                .content("{\"trackIds\":[\"b\"],\"expectedVersion\":1}")).andExpect(status().isNotFound());
+        var passengerEdit = org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch(endpoint)
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("Authorization", "Bearer " + tokens.access(passenger, "session", Instant.now()));
+        mvc.perform(passengerEdit.content("{\"trackIds\":[\"b\",\"a\"],\"expectedVersion\":1}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.tracks[0].id").value("b"));
+        var driverEdit = org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch(endpoint)
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("Authorization", "Bearer " + tokens.access(driver, "session", Instant.now()));
+        mvc.perform(driverEdit.content("{\"trackIds\":[\"a\"],\"expectedVersion\":1}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("VERSION_CONFLICT"));
+        mvc.perform(driverEdit.content("{\"trackIds\":[\"a\",\"a\"],\"expectedVersion\":2}"))
+                .andExpect(status().isUnprocessableContent());
+        mvc.perform(driverEdit.content("{\"trackIds\":[\"a\"],\"expectedVersion\":2}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.durationSeconds").value(200))
+                .andExpect(jsonPath("$.data.trackCount").value(1)).andExpect(jsonPath("$.data.version").value(3));
+
+        String driverToken = "Bearer " + tokens.access(driver, "session", Instant.now());
+        String passengerToken = "Bearer " + tokens.access(passenger, "session", Instant.now());
+        String outsiderToken = "Bearer " + tokens.access(outsider, "session", Instant.now());
+        String bookmarkPath = "/api/v1/me/playlists/ply_edit";
+        String libraryPath = "/api/v1/me/playlists";
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(libraryPath)).andExpect(status().isUnauthorized());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put(bookmarkPath).header("Authorization", outsiderToken)).andExpect(status().isNotFound());
+        for (String token : java.util.List.of(driverToken, driverToken, passengerToken)) {
+            mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put(bookmarkPath).header("Authorization", token))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.accepted").value(true));
+            mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(libraryPath).header("Authorization", token))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalCount").value(1))
+                    .andExpect(jsonPath("$.data.items[0].driveTitle").value("test"));
+        }
+        for (int attempt = 0; attempt < 2; attempt++) {
+            mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete(bookmarkPath).header("Authorization", driverToken)).andExpect(status().isNoContent());
+        }
+        String detail = "/api/v1/playlists/ply_edit";
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(detail).header("Authorization", driverToken))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.savedByMe").value(false));
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(detail).header("Authorization", passengerToken))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.savedByMe").value(true));
+        jdbc.sql("UPDATE couples SET disconnected_at = CURRENT_TIMESTAMP WHERE id = 'cpl_edit'").update();
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(libraryPath).header("Authorization", passengerToken))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalCount").value(0));
     }
 
     private String createLogoutUser(long kakaoId) {

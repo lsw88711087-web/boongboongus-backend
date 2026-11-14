@@ -126,6 +126,10 @@ class ApiIntegrationTest {
     @Test
     void openApiDocumentsImplementedRoutes() throws Exception {
         mvc.perform(get("/v3/api-docs"))
+                .andExpect(jsonPath("$.components.securitySchemes.bearerAuth.scheme").value("bearer"))
+                .andExpect(jsonPath("$.paths['/api/v1/playlists'].post.security[0].bearerAuth").isArray())
+                .andExpect(jsonPath("$.paths['/api/v1/jobs/{jobId}'].get.security[0].bearerAuth").isArray())
+                .andExpect(jsonPath("$.paths['/api/v1/auth/token'].post.security").doesNotExist())
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.paths['/api/v1/health']").exists())
                 .andExpect(jsonPath("$.paths['/api/v1/app-config'].get").exists());

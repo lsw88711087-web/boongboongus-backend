@@ -6,6 +6,7 @@ import com.boongboongus.backend.common.api.IdempotentWrite;
 import com.boongboongus.backend.domain.job.dto.JobResponse;
 import com.boongboongus.backend.domain.job.service.JobService;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import java.security.Principal;
 import java.util.List;
 import org.springframework.http.HttpStatus;
@@ -20,6 +21,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
+@SecurityRequirement(name = "bearerAuth")
 @RestController
 @RequestMapping("/api/v1/jobs")
 class JobController {

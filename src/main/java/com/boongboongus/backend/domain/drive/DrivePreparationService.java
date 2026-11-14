@@ -344,6 +344,38 @@ public class DrivePreparationService {
         return principal.getName();
     }
 
+    public boolean canAccessPlaylistDrive(String userId, String driveId) {
+        return playlistDrive(userId, driveId).isPresent();
+    }
+
+    public int playlistDuration(String userId, String driveId) {
+        var drive = playlistDrive(userId, driveId).orElseThrow(
+                () -> new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.NOT_FOUND));
+        if (drive.destination() == null) {
+            return 3600;
+        }
+        var origin = store.latestCoordinate(driveId)
+                .map(coordinate -> new DriveRouteLookup.Place(null, null, null, coordinate)).orElse(drive.origin());
+        var lookup = routes.getIfAvailable();
+        try {
+            if (origin == null || lookup == null) {
+                throw new DriveRouteLookup.LiveRouteUnavailable();
+            }
+            return Math.max(1, lookup.estimatePlaylistDuration(origin, drive.destination()));
+        } catch (DriveRouteLookup.LiveRouteUnavailable exception) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE, "주행 예상 시간을 확인할 수 없습니다.", exception);
+        }
+    }
+
+    private Optional<DriveRow> playlistDrive(String userId, String driveId) {
+        return Optional.ofNullable(couples.getIfAvailable()).flatMap(lookup -> lookup.findCurrent(userId))
+                .filter(couple -> couple.contains(userId))
+                .flatMap(couple -> store.findDrive(couple.id(), driveId))
+                .filter(drive -> !"CANCELLED".equals(drive.status()))
+                .filter(drive -> userId.equals(drive.driverUserId()) || userId.equals(drive.passengerUserId()));
+    }
+
     String optionalCoupleId(Principal principal) {
         String user = userId(principal);
         CurrentCoupleLookup lookup = couples.getIfAvailable();

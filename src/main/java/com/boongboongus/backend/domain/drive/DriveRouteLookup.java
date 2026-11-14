@@ -11,6 +11,10 @@ public interface DriveRouteLookup {
         return Optional.empty();
     }
 
+    default int estimatePlaylistDuration(Place origin, Place destination) {
+        throw new LiveRouteUnavailable();
+    }
+
     final class LiveRouteUnavailable extends RuntimeException {
     }
 
