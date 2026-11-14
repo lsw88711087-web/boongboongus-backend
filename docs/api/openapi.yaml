@@ -1727,8 +1727,10 @@ paths:
       description: '**상태:** 설계 초안 · **접근:** 로그인 필수
 
 
-        위도와 경도는 함께 입력하거나 함께 생략한다. 위치 정보가 없거나 날씨 공급자 데이터가 누락되면 해당 날씨 값을 null로, weatherAvailable을 false로 반환한다.
+        위도와 경도는 함께 입력하거나 함께 생략한다. 위치 또는 공급자 데이터가 없으면 해당 날씨 값을 null로 반환하고, 기온과 날씨가 모두 없으면 weatherAvailable은 false다.
         temperatureC는 현재 위치의 섭씨 기온이며 값이 없으면 null이다.
+        현재 위치의 5km 격자에서 기상청 초단기실황의 기온과 강수 형태를 조회한다. 비·눈 등 실제 강수가 우선이며, 그 외에는 초단기예보의 가까운 시각의 하늘 상태를 사용한다.
+        하늘 상태가 없어도 관측 기온은 표시할 수 있다. 프론트는 weather에 맞는 아이콘을 선택하고, null이면 기본 아이콘과 --를 표시한다.
         홈의 경로 교통 카드는 목적지 설정 전에는 --를 표시하고, 설정 후에는 현재 선택한 경로 응답의 trafficSummary를 사용한다.
         홈 기본 데이터는 정상 반환한다. Bluetooth 연결 여부는 FE 기기 상태로 표시한다. pendingCards는 현재 커플의 작성 기한이 남은 UNWRITTEN/DRAFT 카드를 마감순으로 반환하며, 미연결이거나 해당 카드가 없으면 빈 배열이다.
         커플 중 한 명이 주행 중일 때 상대가 앱을 열면 FE는 현재 주행 조회 결과를 사용해 홈에 진행 중인 드라이브 배너를 표시한다. 배너를 누르면 기존 주행으로 이동한다.
@@ -1787,7 +1789,7 @@ paths:
                     weather: 맑음
                     temperatureC: 18.5
                     traffic: null
-                    recommendedTheme: 노을 드라이브
+                    recommendedTheme: null
                     radiusMeters: 5000
                     weatherAvailable: true
                     trafficAvailable: false
@@ -10099,7 +10101,7 @@ components:
           - string
           - 'null'
           example: 맑음
-          description: ''
+          description: 관측 강수 형태(비, 비/눈, 눈, 빗방울, 빗방울/눈날림, 눈날림) 또는 예보 하늘 상태(맑음, 구름 많음, 흐림). 둘 다 표시할 값이 없으면 null이다.
         temperatureC:
           type:
           - number
@@ -10125,7 +10127,7 @@ components:
         weatherAvailable:
           type: boolean
           example: true
-          description: ''
+          description: weather 또는 temperatureC가 있으면 true이다.
         trafficAvailable:
           type: boolean
           example: false
@@ -10135,7 +10137,7 @@ components:
           - string
           - 'null'
           example: '2026-11-02T07:00:00Z'
-          description: ''
+          description: 기상청 초단기실황의 기준 시각(UTC).
           format: date-time
       required:
       - weather

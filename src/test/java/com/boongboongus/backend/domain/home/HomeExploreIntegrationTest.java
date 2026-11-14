@@ -18,13 +18,22 @@ import com.boongboongus.backend.domain.home.HomeDataSource.Summary;
 import com.boongboongus.backend.domain.home.HomeDataSource.User;
 import com.boongboongus.backend.domain.home.PlaceCatalog.Category;
 import com.boongboongus.backend.domain.home.PlaceCatalog.Place;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
+import java.io.IOException;
+import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.IntStream;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -35,10 +44,11 @@ import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
-import org.springframework.web.client.ResourceAccessException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -52,6 +62,77 @@ class HomeExploreIntegrationTest {
     private static final String RECORDER = "home_test_recorder";
     private static final String PARTNER = "home_test_partner";
     private static final String SINGLE = "home_test_single";
+    private static HttpServer weatherServer;
+
+    @DynamicPropertySource
+    static void configureWeather(DynamicPropertyRegistry properties) throws IOException {
+        weatherServer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        weatherServer.createContext("/getUltraSrtNcst", HomeExploreIntegrationTest::weather);
+        weatherServer.createContext("/getUltraSrtFcst", HomeExploreIntegrationTest::sky);
+        weatherServer.start();
+        properties.add("app.weather.kma.base-url", () -> "http://127.0.0.1:" + weatherServer.getAddress().getPort());
+        properties.add("app.weather.kma.service-key", () -> "test%2Bkey%2F%3D");
+    }
+
+    @AfterAll
+    static void stopWeatherServer() {
+        if (weatherServer != null) {
+            weatherServer.stop(0);
+        }
+    }
+
+    private static void weather(HttpExchange exchange) throws IOException {
+        var params = List.of(exchange.getRequestURI().getRawQuery().split("&"));
+        if (!validWeatherRequest(params, "00")) {
+            exchange.sendResponseHeaders(503, -1);
+            exchange.close();
+            return;
+        }
+        String precipitation = params.contains("nx=60") ? "3" : "0";
+        respondWeather(exchange, """
+                {"response":{"header":{"resultCode":"00"},"body":{"items":{"item":[
+                  {"category":"T1H","obsrValue":"-2.5"},{"category":"PTY","obsrValue":"%s"}
+                ]}}}}
+                """.formatted(precipitation));
+    }
+
+    private static void sky(HttpExchange exchange) throws IOException {
+        var params = List.of(exchange.getRequestURI().getRawQuery().split("&"));
+        if (!validWeatherRequest(params, "30") || params.contains("nx=64")) {
+            exchange.sendResponseHeaders(503, -1);
+            exchange.close();
+            return;
+        }
+        String sky = params.contains("nx=62") ? "3" : params.contains("nx=63") ? "4" : "1";
+        ZonedDateTime now = ZonedDateTime.now(ZoneId.of("Asia/Seoul"));
+        var nearest = now.plusMinutes(30).truncatedTo(ChronoUnit.HOURS);
+        var later = nearest.plusHours(2);
+        var date = DateTimeFormatter.BASIC_ISO_DATE;
+        var time = DateTimeFormatter.ofPattern("HHmm");
+        respondWeather(exchange, """
+                {"response":{"header":{"resultCode":"00"},"body":{"items":{"item":[
+                  {"category":"SKY","fcstDate":"%s","fcstTime":"%s","fcstValue":"4"},
+                  {"category":"SKY","fcstDate":"%s","fcstTime":"%s","fcstValue":"%s"}
+                ]}}}}
+                """.formatted(date.format(later.toLocalDate()), time.format(later),
+                        date.format(nearest.toLocalDate()), time.format(nearest), sky));
+    }
+
+    private static boolean validWeatherRequest(List<String> params, String minute) {
+        return params.containsAll(List.of("ny=127", "serviceKey=test%2Bkey%2F%3D", "dataType=JSON"))
+                && params.stream().anyMatch(param -> param.matches("nx=6[0-4]"))
+                && params.stream().anyMatch(param -> param.matches("base_date=[0-9]{8}"))
+                && params.stream().anyMatch(param -> param.matches("base_time=[0-9]{2}" + minute));
+    }
+
+    private static void respondWeather(HttpExchange exchange, String body) throws IOException {
+        byte[] json = body.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", "application/json");
+        exchange.sendResponseHeaders(200, json.length);
+        try (var output = exchange.getResponseBody()) {
+            output.write(json);
+        }
+    }
 
     @Autowired
     MockMvc mvc;
@@ -116,11 +197,33 @@ class HomeExploreIntegrationTest {
     }
 
     @Test
-    void homeReturnsCelsiusTemperatureWhenAvailable() throws Exception {
+    void observedSnowTakesPriorityOverForecastSky() throws Exception {
         mvc.perform(get(API + "/home").principal(() -> SINGLE)
-                .param("latitude", "37.6").param("longitude", "127.0"))
+                .param("latitude", "37.5665").param("longitude", "126.9780"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.context.weather").value("맑음"))
+                .andExpect(jsonPath("$.data.context.weather").value("눈"))
+                .andExpect(jsonPath("$.data.context.temperatureC").value(-2.5))
+                .andExpect(jsonPath("$.data.context.observedAt").isNotEmpty())
+                .andExpect(jsonPath("$.data.context.weatherAvailable").value(true));
+    }
+
+    @Test
+    void homeShowsForecastSkyWhenNoPrecipitationIsObserved() throws Exception {
+        assertHomeWeather("127.05", "맑음");
+        assertHomeWeather("127.10", "구름 많음");
+        assertHomeWeather("127.15", "흐림");
+    }
+
+    @Test
+    void homeKeepsObservedTemperatureWhenSkyForecastFails() throws Exception {
+        assertHomeWeather("127.20", null);
+    }
+
+    private void assertHomeWeather(String longitude, String expectedWeather) throws Exception {
+        mvc.perform(get(API + "/home").principal(() -> SINGLE)
+                .param("latitude", "37.5665").param("longitude", longitude))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.context.weather").value(expectedWeather))
                 .andExpect(jsonPath("$.data.context.temperatureC").value(-2.5))
                 .andExpect(jsonPath("$.data.context.weatherAvailable").value(true));
     }
@@ -206,17 +309,6 @@ class HomeExploreIntegrationTest {
         @Bean
         DriveLocationConsentLookup driveLocationConsentLookup() {
             return RECORDER::equals;
-        }
-
-        @Bean
-        HomeContextLookup homeContextLookup() {
-            return location -> {
-                if (location.equals(new Coordinate(37.6, 127.0))) {
-                    return new HomeContextLookup.Context("맑음", -2.5, null, null, 5000, true, false,
-                            Instant.parse("2026-11-02T07:00:00Z"));
-                }
-                throw new ResourceAccessException("fixture unavailable");
-            };
         }
 
         @Bean
