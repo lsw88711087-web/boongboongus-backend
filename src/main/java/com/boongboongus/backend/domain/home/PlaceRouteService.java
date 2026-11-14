@@ -120,7 +120,8 @@ class PlaceRouteService implements DriveRouteLookup {
         var directions = calculated == null ? kakao.find(input) : calculated;
         return new RouteView(row.id(), input.origin(), input.destination(), input.waypoints(),
                 directions.polyline(), directions.distanceMeters(), directions.durationSeconds(),
-                Instant.now().plusSeconds(directions.durationSeconds()), row.expiresAt(), "KAKAO", List.of());
+                Instant.now().plusSeconds(directions.durationSeconds()), row.expiresAt(), "KAKAO",
+                directions.trafficSummary(), List.of());
     }
 
     private Place point(PlaceRouteController.Endpoint point) {
@@ -163,6 +164,6 @@ class PlaceRouteService implements DriveRouteLookup {
     @JsonInclude(JsonInclude.Include.ALWAYS)
     record RouteView(String id, Place origin, Place destination, List<Place> waypoints, String polyline,
             int distanceMeters, int durationSeconds, Instant estimatedArrivalAt, Instant expiresAt, String provider,
-            List<String> warnings) {
+            KakaoDirectionsClient.TrafficSummary trafficSummary, List<String> warnings) {
     }
 }

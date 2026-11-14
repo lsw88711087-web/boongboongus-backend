@@ -45,6 +45,10 @@ app:
       client-secret: ${KAKAO_LOGIN_CLIENT_SECRET:}
       rest-api-key: ${KAKAO_LOGIN_REST_API_KEY:}
       redirect-uris: ${KAKAO_LOGIN_REDIRECT_URIS:}
+  weather:
+    kma:
+      base-url: https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0
+      service-key: ${KMA_SERVICE_KEY:}
   maps:
     kakao:
       local-base-url: https://dapi.kakao.com

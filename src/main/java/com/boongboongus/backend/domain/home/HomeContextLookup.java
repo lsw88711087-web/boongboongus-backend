@@ -9,10 +9,10 @@ public interface HomeContextLookup {
     Context find(Coordinate location);
 
     @JsonInclude(JsonInclude.Include.ALWAYS)
-    record Context(String weather, String traffic, String recommendedTheme, int radiusMeters,
+    record Context(String weather, Double temperatureC, String traffic, String recommendedTheme, int radiusMeters,
             boolean weatherAvailable, boolean trafficAvailable, Instant observedAt) {
         static Context unavailable() {
-            return new Context(null, null, null, 5000, false, false, null);
+            return new Context(null, null, null, null, 5000, false, false, null);
         }
     }
 }
