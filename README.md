@@ -236,3 +236,13 @@ app:
 - PR도 기본 본문 템플릿을 사용하며 전체 내용을 한 번에 수정·붙여넣기 가능
 
 브랜치 보호는 저장소 관리자가 GitHub Settings → Rules → Rulesets에서 별도로 설정합니다. PR 승인1명과 `Build and test` 체크 필수를 권장합니다. 이 저장소 파일만으로 GitHub의 보호 규칙이나 Secrets가 설정되지는 않습니다.
+
+## AI 라디오
+
+로컬 테스트에는 `GROQ_API_KEY`와 Text to Speech 권한이 있는 `ELEVENLABS_API_KEY`를 로컬 `.env`에 설정하고 서버를 시작합니다. Groq는 사연의 핵심을 담은 짧은 한국어 대본을 작성합니다. 대본은 공백과 문장부호를 포함해 최대 250자이며, 초과하면 음성을 생성하기 전에 작업이 실패합니다. 유효한 대본은 ElevenLabs에서 MP3로 변환합니다.
+
+1. Bearer 토큰과 새 `Idempotency-Key`로 `POST /api/v1/radio/episodes`에 `{"mode":"USER_STORY","story":"오늘 운전해줘서 고마워!"}`를 보냅니다. 랜덤 방송은 `{"mode":"RANDOM"}`을 보냅니다.
+2. `GET /api/v1/jobs/{jobId}`에서 `SUCCEEDED`와 `resourceId`를 확인합니다.
+3. `GET /api/v1/radio/episodes/{episodeId}`로 대본과 음성 URL을 가져옵니다. 음성 URL에도 생성자의 Bearer 토큰을 보내야 하며 만료되면 상세를 다시 조회합니다.
+
+4. 보낸 사연은 GET /api/v1/radio/episodes에서 확인합니다. 본인 USER_STORY 중 음성 생성이 완료된 항목만 최신순으로 반환합니다. q(최대 100자)는 원사연 또는 방송문구의 일부를 검색합니다. limit은 기본 20, 최대 100입니다. 다음 페이지는 같은 q와 응답의 data.nextCursor를 보냅니다.
