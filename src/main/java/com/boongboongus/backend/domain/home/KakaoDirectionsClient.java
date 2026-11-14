@@ -69,7 +69,49 @@ class KakaoDirectionsClient {
         }
         var roads = new ArrayList<com.boongboongus.backend.domain.drive.DriveRouteLookup.Road>();
         String polyline = encodePolyline(route.sections(), roads);
-        return new Directions(polyline, summary.distance(), summary.duration(), List.copyOf(roads));
+        return new Directions(polyline, summary.distance(), summary.duration(), List.copyOf(roads),
+                summarizeTraffic(route.sections(), summary.distance()));
+    }
+
+    private static TrafficSummary summarizeTraffic(List<Section> sections, int routeDistance) {
+        long smooth = 0;
+        long slow = 0;
+        long congested = 0;
+        boolean blocked = false;
+        for (Section section : sections) {
+            for (Road road : section.roads()) {
+                Integer state = road.trafficState();
+                if (state == null) {
+                    continue;
+                }
+                if (state == 6) {
+                    blocked = true;
+                }
+                Integer distance = road.distance();
+                if (distance == null || distance <= 0) {
+                    continue;
+                }
+                switch (state) {
+                    case 1 -> congested += distance;
+                    case 2, 3 -> slow += distance;
+                    case 4 -> smooth += distance;
+                    default -> { }
+                }
+            }
+        }
+        if (blocked) {
+            return new TrafficSummary(TrafficStatus.BLOCKED, congested);
+        }
+        long known = smooth + slow + congested;
+        // ponytail: distance is an approximation of route conditions. Use delay data if it becomes available.
+        if (routeDistance <= 0 || known == 0 || known * 2 < routeDistance) {
+            return null;
+        }
+        if (congested >= slow && congested >= smooth) {
+            return new TrafficSummary(TrafficStatus.CONGESTED, congested);
+        }
+        TrafficStatus status = slow >= smooth ? TrafficStatus.SLOW : TrafficStatus.SMOOTH;
+        return new TrafficSummary(status, congested);
     }
 
     private static String encodePolyline(List<Section> sections,
@@ -135,7 +177,14 @@ class KakaoDirectionsClient {
     }
 
     record Directions(String polyline, int distanceMeters, int durationSeconds,
-            List<com.boongboongus.backend.domain.drive.DriveRouteLookup.Road> roads) {
+            List<com.boongboongus.backend.domain.drive.DriveRouteLookup.Road> roads, TrafficSummary trafficSummary) {
+    }
+
+    record TrafficSummary(TrafficStatus status, long congestedDistanceMeters) {
+    }
+
+    enum TrafficStatus {
+        SMOOTH, SLOW, CONGESTED, BLOCKED
     }
 
     record RoutePage(List<ProviderRoute> routes) {
@@ -150,6 +199,6 @@ class KakaoDirectionsClient {
     record Section(List<Road> roads) {
     }
 
-    record Road(String name, List<Double> vertexes) {
+    record Road(String name, List<Double> vertexes, Integer distance, @JsonProperty("traffic_state") Integer trafficState) {
     }
 }

@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>붕붕어스 API 명세</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.34.1/swagger-ui.css">
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #1e293b; background: #fafbfc; font-family: system-ui, "Malgun Gothic", sans-serif; }
+    .intro { max-width: 1460px; margin: auto; padding: 28px 20px 12px; }
+    h1 { margin: 0 0 8px; font-size: 27px; letter-spacing: -.04em; }
+    p { margin: 7px 0; line-height: 1.65; }
+    .notice { padding: 14px 16px; border-left: 4px solid #cc8b16; background: #fff7e4; border-radius: 4px; }
+    .tools { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 16px 0 10px; }
+    a { color: #164fa0; }
+    .button { display: inline-block; padding: 9px 14px; background: #fff; border: 1px solid #b8c5d8; border-radius: 6px; cursor: pointer; font: inherit; }
+    input[type=file] { max-width: 100%; }
+    .meta { color: #475569; font-size: 14px; }
+    #load-message { font-size: 14px; }
+    details { margin-top: 12px; border: 1px solid #d8e0eb; border-radius: 6px; background: white; }
+    summary { padding: 13px 16px; cursor: pointer; font-weight: 600; }
+    .scroll { overflow-x: auto; padding: 0 16px 16px; }
+    .intro table { border-collapse: collapse; width: 100%; min-width: 600px; font-size: 14px; line-height: 1.6; }
+    .intro th, .intro td { border-bottom: 1px solid #e2e8f0; padding: 10px; text-align: left; vertical-align: top; }
+    .intro th { color: #475569; }
+    .intro td:first-child { min-width: 160px; }
+    .flow-sequence { display: block; margin-bottom: 5px; overflow-wrap: anywhere; }
+    .flow-note { color: #526177; }
+    #swagger-ui .information-container { background: transparent; }
+    #swagger-ui .info { margin: 25px 0; }
+    #swagger-ui .info .title { font-size: 25px; }
+    #swagger-ui .info .description { display: none; }
+    body.show-common-rules #swagger-ui .info .description { display: block; }
+    #swagger-ui .scheme-container { display: none; }
+    #swagger-ui .opblock-summary-description { overflow-wrap: anywhere; }
+    #swagger-ui .responses-inner { overflow-x: auto; }
+    #swagger-ui .markdown p, #swagger-ui .markdown li { line-height: 1.7; }
+    #swagger-ui .wrapper { max-width: 1460px; }
+    @media (max-width: 600px) { .intro { padding: 20px 14px 10px; } h1 { font-size: 23px; } }
+  </style>
+</head>
+<body>
+  <header class="intro">
+    <h1>붕붕어스 API 명세</h1>
+    <p class="notice"><strong>프론트·백엔드 합의용 설계 초안</strong><br>
+      로그인은 카카오만 제공합니다.
+      정책 표에서 현재 적용할 사용자 확정 정책을 확인할 수 있습니다.
+      업무 API의 실제 구현·외부 연동은 검증 전입니다. 이 화면은 계약 조회용이며 API 실행은 제공하지 않습니다.
+      구현된 API의 실행·확인은 백엔드 서버의 <code>/swagger-ui.html</code>을 사용합니다.</p>
+    <div class="tools">
+      <a id="download" class="button" href="./openapi.yaml" download="openapi.yaml">OpenAPI 원본 받기</a>
+      <button id="toggle-rules" class="button" type="button" aria-expanded="false" aria-controls="common-rules" hidden>공통 규칙 펼치기</button>
+      <label>로컬 YAML 열기 <input id="spec-file" type="file" accept=".yaml,.yml,.json"></label>
+    </div>
+    <p id="load-message" role="status" aria-live="polite">명세를 불러오는 중입니다.</p>
+    <p id="metadata" class="meta"></p>
+    <details id="flows" hidden>
+      <summary>화면별 API 호출 순서</summary>
+      <div class="scroll"><table><thead><tr><th>화면·상황</th><th>호출 순서·처리 조건</th></tr></thead><tbody id="flow-rows"></tbody></table></div>
+    </details>
+    <details id="policies" hidden>
+      <summary id="policy-title">확정된 운영 정책</summary>
+      <div class="scroll"><table><thead><tr><th>항목·담당</th><th>현재 정책</th></tr></thead><tbody id="policy-rows"></tbody></table></div>
+    </details>
+    <details id="implementation-verifications" hidden>
+      <summary id="verification-title">실제 구현·연동 검증</summary>
+      <div class="scroll"><p>정책 확정과 실제 구현 완료를 구분합니다. 아래 항목은 정책 재승인이 아니라 구현 시 확인할 내용입니다.</p><ul id="verification-rows"></ul></div>
+    </details>
+  </header>
+  <main id="swagger-ui"></main>
+  <script>
+    function showLoadError() {
+      document.getElementById("load-message").textContent = "Swagger UI를 불러오지 못했습니다. 인터넷 연결과 CDN 접근을 확인한 뒤 새로고침해 주세요.";
+    }
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.34.1/swagger-ui-bundle.js" onerror="showLoadError()"></script>
+  <script>
+    "use strict";
+    let viewer;
+    let fileUrl;
+    const message = document.getElementById("load-message");
+    const input = document.getElementById("spec-file");
+
+    function fillMetadata() {
+      const spec = viewer.specSelectors.specJson().toJS();
+      if (!spec.paths || !spec.info) return;
+      const operations = new Map();
+      const methods = new Set(["get", "put", "post", "delete", "patch", "head", "options", "trace"]);
+      for (const path of Object.values(spec.paths)) {
+        for (const [method, operation] of Object.entries(path)) {
+          if (methods.has(method)) operations.set(operation.operationId, operation);
+        }
+      }
+      const policies = spec["x-policy-decisions"] || [];
+      const confirmedPolicies = policies.filter(p => p.status === "CONFIRMED");
+      document.getElementById("metadata").textContent = `${spec.info.version} · API ${operations.size}개 · 확정 정책 ${confirmedPolicies.length}건 · 미확정 ${policies.length - confirmedPolicies.length}건 · 검토 ${spec["x-reviewed-at"] || "미기재"}`;
+      const commonRules = document.querySelector("#swagger-ui .info .description");
+      if (commonRules) commonRules.id = "common-rules";
+      document.getElementById("toggle-rules").hidden = !commonRules;
+      message.textContent = "기능을 펼쳐 요청·응답·예시를 확인하세요. 호출 순서의 API 이름을 누르면 해당 항목으로 이동합니다.";
+
+      const policyRows = document.getElementById("policy-rows");
+      policyRows.replaceChildren();
+      for (const policy of policies) {
+        const tr = document.createElement("tr");
+        const name = document.createElement("td");
+        const text = document.createElement("td");
+        name.textContent = `${policy.id} · ${policy.priority} · ${policy.title} (${policy.owner})`;
+        text.textContent = policy.decision || policy.proposal;
+        text.style.whiteSpace = "pre-line";
+        tr.append(name, text); policyRows.append(tr);
+      }
+      document.getElementById("policy-title").textContent = `사용자 확정 정책 ${confirmedPolicies.length}건`;
+      document.getElementById("policies").hidden = policies.length === 0;
+      const verifications = spec["x-implementation-verifications"] || [];
+      const verificationRows = document.getElementById("verification-rows"); verificationRows.replaceChildren();
+      for (const item of verifications) { const li = document.createElement("li"); li.textContent = `${item.title}: ${item.rule}`; verificationRows.append(li); }
+      document.getElementById("implementation-verifications").hidden = verifications.length === 0;
+      document.getElementById("verification-title").textContent = `실제 구현·연동 검증 ${verifications.length}건`;
+
+      const flows = spec["x-integration-flows"] || [];
+      const flowRows = document.getElementById("flow-rows");
+      flowRows.replaceChildren();
+      for (const flow of flows) {
+        const tr = document.createElement("tr");
+        const title = document.createElement("td"); title.textContent = flow.title;
+        const text = document.createElement("td");
+        const sequence = document.createElement("span"); sequence.className = "flow-sequence";
+        for (const token of flow.sequence.split(/([A-Za-z][A-Za-z0-9]*)/)) {
+          const operation = operations.get(token);
+          if (operation) {
+            const a = document.createElement("a");
+            a.href = `#/${encodeURIComponent(operation.tags[0].replace(/\s/g, "_"))}/${encodeURIComponent(token)}`;
+            a.textContent = token;
+            a.addEventListener("click", (event) => {
+              event.preventDefault();
+              location.hash = a.hash;
+              viewer.layoutActions.parseDeepLinkHash(decodeURIComponent(a.hash));
+            });
+            sequence.append(a);
+          } else sequence.append(document.createTextNode(token.replaceAll(" -> ", " → ")));
+        }
+        const note = document.createElement("span"); note.className = "flow-note"; note.textContent = flow.note;
+        text.append(sequence, note); tr.append(title, text); flowRows.append(tr);
+      }
+      document.getElementById("flows").hidden = flows.length === 0;
+    }
+
+    function inlineLocalRefs(doc) {
+      function expand(value, trail = []) {
+        if (Array.isArray(value)) return value.map(item => expand(item, trail));
+        if (!value || typeof value !== "object") return value;
+        if (value.$ref) {
+          if (!value.$ref.startsWith("#/") || trail.includes(value.$ref)) throw new Error("외부/순환 참조 파일은 웹서버에서 열어 주세요.");
+          let target = doc;
+          for (const key of value.$ref.slice(2).split("/")) target = target[key.replaceAll("~1", "/").replaceAll("~0", "~")];
+          const siblings = Object.fromEntries(Object.entries(value).filter(([key]) => key !== "$ref"));
+          return {...expand(target, [...trail, value.$ref]), ...expand(siblings, trail)};
+        }
+        return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, expand(item, trail)]));
+      }
+      return expand(doc);
+    }
+
+    function mount(url, spec) {
+      message.textContent = "명세를 불러오는 중입니다.";
+      document.getElementById("metadata").textContent = "";
+      document.getElementById("policies").hidden = true;
+      document.getElementById("flows").hidden = true;
+      viewer = SwaggerUIBundle({
+        ...(spec ? {spec} : {url}),
+        dom_id: "#swagger-ui",
+        deepLinking: true,
+        filter: true,
+        docExpansion: "none",
+        defaultModelsExpandDepth: -1,
+        defaultModelExpandDepth: 2,
+        displayOperationId: true,
+        showCommonExtensions: true,
+        supportedSubmitMethods: [],
+        validatorUrl: "none",
+        persistAuthorization: false,
+        onComplete: () => queueMicrotask(() => {
+          if (!spec && url?.startsWith("blob:")) {
+            try { mount(undefined, inlineLocalRefs(viewer.specSelectors.specJson().toJS())); }
+            catch (error) { message.textContent = error.message; }
+          } else fillMetadata();
+        }),
+      });
+    }
+
+    input.addEventListener("change", () => {
+      const file = input.files[0];
+      if (!file || typeof SwaggerUIBundle === "undefined") return;
+      if (fileUrl) URL.revokeObjectURL(fileUrl);
+      fileUrl = URL.createObjectURL(file);
+      const download = document.getElementById("download");
+      download.href = fileUrl;
+      download.download = file.name;
+      mount(fileUrl);
+    });
+
+    document.getElementById("toggle-rules").addEventListener("click", (event) => {
+      const expanded = document.body.classList.toggle("show-common-rules");
+      event.currentTarget.setAttribute("aria-expanded", String(expanded));
+      event.currentTarget.textContent = expanded ? "공통 규칙 접기" : "공통 규칙 펼치기";
+    });
+
+    if (typeof SwaggerUIBundle !== "undefined") {
+      if (location.protocol === "file:") {
+        message.textContent = "‘로컬 YAML 열기’에서 같은 폴더의 openapi.yaml을 선택하세요. 웹에 배포하면 자동으로 열립니다.";
+      } else mount(new URL("./openapi.yaml", location.href).href);
+    }
+  </script>
+</body>
+</html>
