@@ -1,6 +1,7 @@
 package com.boongboongus.backend.domain.home;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -84,6 +85,7 @@ class HomeExploreIntegrationTest {
                 .andExpect(jsonPath("$.data.me.id").value(PARTNER))
                 .andExpect(jsonPath("$.data.activeDriveId").value(driveId))
                 .andExpect(jsonPath("$.data.context.weather").value((Object) null))
+                .andExpect(jsonPath("$.data.context.temperatureC").value(nullValue()))
                 .andExpect(jsonPath("$.data.context.weatherAvailable").value(false))
                 .andExpect(jsonPath("$.data.context.trafficAvailable").value(false))
                 .andExpect(jsonPath("$.data.pendingCards.length()").value(2))
@@ -105,11 +107,22 @@ class HomeExploreIntegrationTest {
                 .param("latitude", "37.5").param("longitude", "127.0"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.me.id").value(SINGLE))
+                .andExpect(jsonPath("$.data.context.temperatureC").value(nullValue()))
                 .andExpect(jsonPath("$.data.context.weatherAvailable").value(false));
         mvc.perform(get(API + "/home").principal(() -> SINGLE).param("latitude", "37.5"))
                 .andExpect(status().isBadRequest());
         mvc.perform(get(API + "/home")).andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.error.code").value("AUTHENTICATION_REQUIRED"));
+    }
+
+    @Test
+    void homeReturnsCelsiusTemperatureWhenAvailable() throws Exception {
+        mvc.perform(get(API + "/home").principal(() -> SINGLE)
+                .param("latitude", "37.6").param("longitude", "127.0"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.context.weather").value("맑음"))
+                .andExpect(jsonPath("$.data.context.temperatureC").value(-2.5))
+                .andExpect(jsonPath("$.data.context.weatherAvailable").value(true));
     }
 
     @Test
@@ -197,7 +210,13 @@ class HomeExploreIntegrationTest {
 
         @Bean
         HomeContextLookup homeContextLookup() {
-            return location -> { throw new ResourceAccessException("fixture unavailable"); };
+            return location -> {
+                if (location.equals(new Coordinate(37.6, 127.0))) {
+                    return new HomeContextLookup.Context("맑음", -2.5, null, null, 5000, true, false,
+                            Instant.parse("2026-11-02T07:00:00Z"));
+                }
+                throw new ResourceAccessException("fixture unavailable");
+            };
         }
 
         @Bean
