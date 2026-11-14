@@ -20,6 +20,7 @@ import org.springframework.web.util.UriComponentsBuilder;
 class KakaoPlaceClient {
     static final int KEYWORD_PAGE_SIZE = 15;
     static final int MAX_PAGE = 45;
+    private static final int PARKING_RADIUS_METERS = 500;
     private final RestClient http;
     private final URI baseUrl;
     private final String apiKey;
@@ -51,6 +52,19 @@ class KakaoPlaceClient {
             throw unavailable();
         }
         return result.documents().stream().findFirst();
+    }
+
+    Optional<KeywordPlace> nearestParking(Coordinate destination) {
+        KeywordPage result = get("/v2/local/search/category.json", KeywordPage.class, uri -> uri
+                .queryParam("category_group_code", "PK6")
+                .queryParam("x", destination.longitude()).queryParam("y", destination.latitude())
+                .queryParam("radius", PARKING_RADIUS_METERS).queryParam("sort", "distance").queryParam("size", 1));
+        if (result.documents() == null) {
+            throw unavailable();
+        }
+        return result.documents().stream()
+                .filter(place -> place != null && place.name() != null && !place.name().isBlank())
+                .findFirst();
     }
 
     private <T> T get(String path, Class<T> type, Consumer<UriComponentsBuilder> parameters, Object... values) {

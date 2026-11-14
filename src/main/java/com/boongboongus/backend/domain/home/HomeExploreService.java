@@ -33,14 +33,17 @@ class HomeExploreService {
     private final ObjectProvider<PlaceCatalog> catalog;
     private final DrivePreparationService drives;
     private final FavoritePlaceStore favorites;
+    private final KakaoPlaceClient kakaoPlaces;
 
     HomeExploreService(ObjectProvider<HomeDataSource> home, ObjectProvider<HomeContextLookup> context,
-            ObjectProvider<PlaceCatalog> catalog, DrivePreparationService drives, FavoritePlaceStore favorites) {
+            ObjectProvider<PlaceCatalog> catalog, DrivePreparationService drives, FavoritePlaceStore favorites,
+            KakaoPlaceClient kakaoPlaces) {
         this.home = home;
         this.context = context;
         this.catalog = catalog;
         this.drives = drives;
         this.favorites = favorites;
+        this.kakaoPlaces = kakaoPlaces;
     }
 
     HomeView home(String userId, Coordinate location) {
@@ -100,7 +103,22 @@ class HomeExploreService {
         PlaceCatalog source = requiredSource(catalog, "장소 상세 정보를 확인할 수 없습니다.");
         Place place = source.findById(placeId).orElseThrow(() -> notFound("장소를 찾을 수 없습니다."));
         return new PlaceDetail(summarize(source, userId, place, location), place.photos(), place.introduction(),
-                place.parkingInfo(), place.recommendedVisitTime(), place.mainRoads(), null);
+                parkingInfo(place), place.recommendedVisitTime(), place.mainRoads(), null);
+    }
+
+    private String parkingInfo(Place place) {
+        if (place.parkingInfo() != null && !place.parkingInfo().isBlank()) {
+            return place.parkingInfo();
+        }
+        try {
+            return kakaoPlaces.nearestParking(place.coordinate())
+                    .map(parking -> parking.distance() != null && parking.distance().matches("[0-9]+")
+                            ? parking.name() + " · 목적지에서 " + parking.distance() + "m"
+                            : parking.name())
+                    .orElse(null);
+        } catch (HomeExploreException exception) {
+            return null;
+        }
     }
 
     private Context homeContext(Coordinate location) {
