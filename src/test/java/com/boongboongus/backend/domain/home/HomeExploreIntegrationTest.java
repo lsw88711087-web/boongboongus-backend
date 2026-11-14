@@ -1,6 +1,7 @@
 package com.boongboongus.backend.domain.home;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -17,6 +18,10 @@ import com.boongboongus.backend.domain.home.HomeDataSource.Summary;
 import com.boongboongus.backend.domain.home.HomeDataSource.User;
 import com.boongboongus.backend.domain.home.PlaceCatalog.Category;
 import com.boongboongus.backend.domain.home.PlaceCatalog.Place;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
+import java.io.IOException;
+import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -24,6 +29,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.IntStream;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -34,10 +40,11 @@ import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
-import org.springframework.web.client.ResourceAccessException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -51,6 +58,44 @@ class HomeExploreIntegrationTest {
     private static final String RECORDER = "home_test_recorder";
     private static final String PARTNER = "home_test_partner";
     private static final String SINGLE = "home_test_single";
+    private static HttpServer weatherServer;
+
+    @DynamicPropertySource
+    static void configureWeather(DynamicPropertyRegistry properties) throws IOException {
+        weatherServer = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        weatherServer.createContext("/getUltraSrtNcst", HomeExploreIntegrationTest::weather);
+        weatherServer.start();
+        properties.add("app.weather.kma.base-url", () -> "http://127.0.0.1:" + weatherServer.getAddress().getPort());
+        properties.add("app.weather.kma.service-key", () -> "test%2Bkey%2F%3D");
+    }
+
+    @AfterAll
+    static void stopWeatherServer() {
+        if (weatherServer != null) {
+            weatherServer.stop(0);
+        }
+    }
+
+    private static void weather(HttpExchange exchange) throws IOException {
+        var params = List.of(exchange.getRequestURI().getRawQuery().split("&"));
+        if (!params.containsAll(List.of("nx=60", "ny=127", "serviceKey=test%2Bkey%2F%3D", "dataType=JSON"))
+                || params.stream().noneMatch(param -> param.matches("base_date=[0-9]{8}"))
+                || params.stream().noneMatch(param -> param.matches("base_time=[0-9]{2}00"))) {
+            exchange.sendResponseHeaders(503, -1);
+            exchange.close();
+            return;
+        }
+        byte[] json = """
+                {"response":{"header":{"resultCode":"00"},"body":{"items":{"item":[
+                  {"category":"T1H","obsrValue":"-2.5"},{"category":"PTY","obsrValue":"3"}
+                ]}}}}
+                """.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", "application/json");
+        exchange.sendResponseHeaders(200, json.length);
+        try (var output = exchange.getResponseBody()) {
+            output.write(json);
+        }
+    }
 
     @Autowired
     MockMvc mvc;
@@ -84,6 +129,7 @@ class HomeExploreIntegrationTest {
                 .andExpect(jsonPath("$.data.me.id").value(PARTNER))
                 .andExpect(jsonPath("$.data.activeDriveId").value(driveId))
                 .andExpect(jsonPath("$.data.context.weather").value((Object) null))
+                .andExpect(jsonPath("$.data.context.temperatureC").value(nullValue()))
                 .andExpect(jsonPath("$.data.context.weatherAvailable").value(false))
                 .andExpect(jsonPath("$.data.context.trafficAvailable").value(false))
                 .andExpect(jsonPath("$.data.pendingCards.length()").value(2))
@@ -105,11 +151,23 @@ class HomeExploreIntegrationTest {
                 .param("latitude", "37.5").param("longitude", "127.0"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.me.id").value(SINGLE))
+                .andExpect(jsonPath("$.data.context.temperatureC").value(nullValue()))
                 .andExpect(jsonPath("$.data.context.weatherAvailable").value(false));
         mvc.perform(get(API + "/home").principal(() -> SINGLE).param("latitude", "37.5"))
                 .andExpect(status().isBadRequest());
         mvc.perform(get(API + "/home")).andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.error.code").value("AUTHENTICATION_REQUIRED"));
+    }
+
+    @Test
+    void homeReturnsCelsiusTemperatureWhenAvailable() throws Exception {
+        mvc.perform(get(API + "/home").principal(() -> SINGLE)
+                .param("latitude", "37.5665").param("longitude", "126.9780"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.context.weather").value("눈"))
+                .andExpect(jsonPath("$.data.context.temperatureC").value(-2.5))
+                .andExpect(jsonPath("$.data.context.observedAt").isNotEmpty())
+                .andExpect(jsonPath("$.data.context.weatherAvailable").value(true));
     }
 
     @Test
@@ -193,11 +251,6 @@ class HomeExploreIntegrationTest {
         @Bean
         DriveLocationConsentLookup driveLocationConsentLookup() {
             return RECORDER::equals;
-        }
-
-        @Bean
-        HomeContextLookup homeContextLookup() {
-            return location -> { throw new ResourceAccessException("fixture unavailable"); };
         }
 
         @Bean

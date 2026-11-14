@@ -1729,6 +1729,7 @@ paths:
 
         위도와 경도는 함께 입력하거나 함께 생략한다. 위치 정보가 없거나 공급자 데이터가 누락되면 해당 context 값을 null로, weatherAvailable 또는 trafficAvailable을 false로 반환한다.
         temperatureC는 현재 위치의 섭씨 기온이며 값이 없으면 null이다.
+        기상청 초단기실황을 현재 위치의 5km 격자로 조회한다. weather는 관측된 강수 형태이며, weatherAvailable은 기온 또는 강수 형태가 있으면 true이다.
         홈 기본 데이터는 정상 반환한다. Bluetooth 연결 여부는 FE 기기 상태로 표시한다. pendingCards는 현재 커플의 작성 기한이 남은 UNWRITTEN/DRAFT 카드를 마감순으로 반환하며, 미연결이거나 해당 카드가 없으면 빈 배열이다.
         커플 중 한 명이 주행 중일 때 상대가 앱을 열면 FE는 현재 주행 조회 결과를 사용해 홈에 진행 중인 드라이브 배너를 표시한다. 배너를 누르면 기존 주행으로 이동한다.
 
@@ -1783,13 +1784,13 @@ paths:
                   activeDriveId: null
                   pendingCards: []
                   context:
-                    weather: 맑음
+                    weather: 강수 없음
                     temperatureC: 18.5
-                    traffic: 원활
-                    recommendedTheme: 노을 드라이브
+                    traffic: null
+                    recommendedTheme: null
                     radiusMeters: 5000
                     weatherAvailable: true
-                    trafficAvailable: true
+                    trafficAvailable: false
                     observedAt: '2026-11-02T07:00:00Z'
                 meta:
                   requestId: req_01
@@ -10087,8 +10088,8 @@ components:
           type:
           - string
           - 'null'
-          example: 맑음
-          description: ''
+          example: 강수 없음
+          description: 기상청 초단기실황 강수 형태. 예를 들어 강수 없음, 비, 눈이며 해당 관측값이 없으면 null이다.
         temperatureC:
           type:
           - number
@@ -10114,7 +10115,7 @@ components:
         weatherAvailable:
           type: boolean
           example: true
-          description: ''
+          description: 강수 형태 또는 기온을 조회했으면 true이다.
         trafficAvailable:
           type: boolean
           example: true
