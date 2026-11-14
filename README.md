@@ -122,6 +122,12 @@ FAQ는 `src/main/resources/faqs.yml`의 `app.faq.items`에 `id`, `question`, `an
 
 `PATCH /api/v1/notifications/{notificationId}/read`는 요청 본문 없이 내 알림을 읽음 처리하고 갱신한 항목을 반환합니다. 이미 읽은 알림의 `readAt`은 유지합니다. 다른 회원의 알림이나 만료된 알림은 `404`입니다. 장소 공유, 커플 연결·복구·해제 시 상대 회원의 인앱 알림을 저장합니다. 홈의 미확인 알림 수에는 읽지 않은 미만료 알림만 포함됩니다. 소감 제출과 실제 푸시 전달은 해당 기능 연동 시 추가합니다.
 
+### AI 생성 작업 조회·취소
+
+`GET /api/v1/jobs/{jobId}`로 로그인한 본인의 생성 상태와 결과 ID를 조회합니다. 진행 중에는 `retryAfterSeconds` 뒤에 다시 조회하고, 종료 상태에서는 조회를 중단합니다. 만료된 작업 조회는 `410 JOB_EXPIRED`를 반환합니다.
+
+`POST /api/v1/jobs/{jobId}/cancel`은 Bearer 토큰과 `Idempotency-Key`(16~128자)를 받습니다. 대기·실행 중인 작업은 `CANCEL_REQUESTED`가 되고 서버가 `CANCELLED`로 마무리합니다. 성공·실패가 먼저 반영된 작업에는 `409 JOB_ALREADY_FINISHED`를 반환합니다. DJ·라디오·게임의 작업 생성과 결과 저장은 해당 기능에서 연결합니다. 생성 작업의 조회 유효기간은 24시간으로 설정했습니다.
+
 ## PostgreSQL 개발 환경
 
 카카오 로그인을 시작하려면 서버의 `.env` 또는 환경변수에 `KAKAO_LOGIN_REST_API_KEY`와 `KAKAO_LOGIN_REDIRECT_URIS`를 설정합니다. 콜백 주소는 카카오디벨로퍼스에 등록한 값과 정확히 일치해야 하며, 여러 주소는 쉼표로 구분합니다. 요청에는 `provider=KAKAO`, `purpose=LOGIN`, `redirectUri`와 앱이 생성한 S256 `codeChallenge`(43자)를 보냅니다. 성공하면 `201`과 카카오 로그인 URL, `authSessionId`, `state`, 10분 후의 만료 시각을 반환합니다. Flyway는 로그인 시도를 저장할 `auth_sessions` 테이블을 생성합니다. 토큰 교환, 만료 세션 정리와 로그인 시작 요청의 호출 제한은 후속 작업입니다.

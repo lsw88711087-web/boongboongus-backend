@@ -51,6 +51,8 @@ class AccessTokenFilter extends OncePerRequestFilter {
 
         String path = request.getRequestURI().substring(request.getContextPath().length());
         if (("/api/v1/me".equals(path) && List.of("GET", "HEAD", "PATCH", "DELETE").contains(request.getMethod()))
+                || (List.of("GET", "HEAD").contains(request.getMethod()) && path.matches("/api/v1/jobs/[^/]+"))
+                || ("POST".equals(request.getMethod()) && path.matches("/api/v1/jobs/[^/]+/cancel"))
                 || ("/api/v1/notifications".equals(path) && List.of("GET", "HEAD").contains(request.getMethod()))
                 || ("PATCH".equals(request.getMethod()) && path.matches("/api/v1/notifications/[^/]+/read"))
                 || ("/api/v1/couple-invites".equals(path) && "POST".equals(request.getMethod()))
