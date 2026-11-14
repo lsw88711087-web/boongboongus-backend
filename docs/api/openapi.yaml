@@ -1727,8 +1727,9 @@ paths:
       description: '**상태:** 설계 초안 · **접근:** 로그인 필수
 
 
-        위도와 경도는 함께 입력하거나 함께 생략한다. 위치 정보가 없거나 공급자 데이터가 누락되면 해당 context 값을 null로, weatherAvailable 또는 trafficAvailable을 false로 반환한다.
+        위도와 경도는 함께 입력하거나 함께 생략한다. 위치 정보가 없거나 날씨 공급자 데이터가 누락되면 해당 날씨 값을 null로, weatherAvailable을 false로 반환한다.
         temperatureC는 현재 위치의 섭씨 기온이며 값이 없으면 null이다.
+        홈의 경로 교통 카드는 목적지 설정 전에는 --를 표시하고, 설정 후에는 현재 선택한 경로 응답의 trafficSummary를 사용한다.
         홈 기본 데이터는 정상 반환한다. Bluetooth 연결 여부는 FE 기기 상태로 표시한다. pendingCards는 현재 커플의 작성 기한이 남은 UNWRITTEN/DRAFT 카드를 마감순으로 반환하며, 미연결이거나 해당 카드가 없으면 빈 배열이다.
         커플 중 한 명이 주행 중일 때 상대가 앱을 열면 FE는 현재 주행 조회 결과를 사용해 홈에 진행 중인 드라이브 배너를 표시한다. 배너를 누르면 기존 주행으로 이동한다.
 
@@ -1785,11 +1786,11 @@ paths:
                   context:
                     weather: 맑음
                     temperatureC: 18.5
-                    traffic: 원활
+                    traffic: null
                     recommendedTheme: 노을 드라이브
                     radiusMeters: 5000
                     weatherAvailable: true
-                    trafficAvailable: true
+                    trafficAvailable: false
                     observedAt: '2026-11-02T07:00:00Z'
                 meta:
                   requestId: req_01
@@ -2424,6 +2425,8 @@ paths:
         좌표·목적지·최대3개 경유지로 계산한다. 경로 계산은 GPS 주행 시작이 아니다. 카카오모빌리티 자동차 길찾기를 실시간 호출한다. 우리 장소 ID 또는 직접 입력한 좌표를 사용하며 카카오맵 실시간 검색 결과는 저장 가능한 목적지로 등록하지 않는다. 자유 좌표의 이름·주소에는 카카오 조회값을 복사하지 않고 사용자 직접 입력값만 보낸다. 동일한 멱등키는 같은 routeId를 사용하고 경로선·거리·예상 시간은 재계산한다. 실제 공급자가 경유지를 지원하지 않으면422 WAYPOINT_UNSUPPORTED이며 FE가 성공 경로로
         꾸미지 않는다. 음성 길안내는 이번 범위에 없다.
 
+        현재 위치를 출발지로 쓰려면 요청에 최신 GPS 좌표를 보낸다. trafficSummary는 같은 카카오 응답에서 계산한 선택 경로의 교통 상태다.
+
 
         **근거:** ON p3-5; OFF p5 · [Figma 289:29709](https://www.figma.com/design/iVcryRTtlYHzHq2JM5wyHQ/?node-id=289-29709)
 
@@ -2462,6 +2465,9 @@ paths:
                   estimatedArrivalAt: '2026-11-02T07:00:00Z'
                   expiresAt: '2026-11-02T07:30:00Z'
                   provider: KAKAO
+                  trafficSummary:
+                    status: SMOOTH
+                    congestedDistanceMeters: 2000
                   warnings:
                   - 경로 제공자가 지원하지 않는 옵션은 별도 안내
                 meta:
@@ -2565,6 +2571,8 @@ paths:
 
         생성자 또는 동일 현재 커플만 접근. 임시 preview 경로는 30분 뒤 만료되어 410 ROUTE_EXPIRED를 반환한다. 주행에 연결된 경로 입력은 주행 접근 범위에서 보존한다. 카카오모빌리티가 반환하는 경로선·거리·예상 시간은 저장하지 않고 조회 때 실시간으로 계산하므로 같은 routeId에서도 달라질 수 있다.
 
+        trafficSummary도 저장된 경로 입력으로 다시 계산한다. 출발지를 현재 위치로 바꾸려면 최신 GPS를 보내 새 경로를 생성한다.
+
 
         **근거:** ON p3-5; OFF p5 · [Figma 289:29709](https://www.figma.com/design/iVcryRTtlYHzHq2JM5wyHQ/?node-id=289-29709)'
       parameters:
@@ -2609,6 +2617,7 @@ paths:
                   estimatedArrivalAt: '2026-11-02T07:00:00Z'
                   expiresAt: '2026-11-02T07:30:00Z'
                   provider: KAKAO
+                  trafficSummary: null
                   warnings:
                   - 경로 제공자가 지원하지 않는 옵션은 별도 안내
                 meta:
@@ -10099,8 +10108,8 @@ components:
           type:
           - string
           - 'null'
-          example: 원활
-          description: ''
+          example: null
+          description: 호환용 필드. 홈의 경로 교통 카드는 선택한 Route의 trafficSummary를 사용한다.
         recommendedTheme:
           type:
           - string
@@ -10117,8 +10126,8 @@ components:
           description: ''
         trafficAvailable:
           type: boolean
-          example: true
-          description: ''
+          example: false
+          description: 호환용 필드. 경로 교통 정보의 제공 여부는 Route.trafficSummary가 null인지로 판단한다.
         observedAt:
           type:
           - string
@@ -10537,6 +10546,25 @@ components:
           type: string
           example: KAKAO
           description: ''
+        trafficSummary:
+          type: [object, 'null']
+          description: >-
+            선택 경로의 도로 구간 거리를 카카오 교통 상태별로 합산한다.
+            4는 원활, 2·3은 서행, 1은 정체로 분류한다.
+            합산 거리가 가장 긴 상태를 선택하고 동률이면 더 나쁜 상태를 우선한다.
+            6이 있는 경우 통행 불가를 우선한다. 그 외에는 유효한 교통 정보의 합산 거리가 전체 경로의 50% 미만이면 null이다.
+            정보 없음(0), 미지원 상태, 거리 누락 및 0 이하인 구간은 거리 합산에서 제외한다.
+          properties:
+            status:
+              type: string
+              enum: [SMOOTH, SLOW, CONGESTED, BLOCKED]
+              description: 각각 원활, 서행, 정체, 통행 불가.
+            congestedDistanceMeters:
+              type: integer
+              minimum: 0
+              description: 교통 상태가 정체(1)인 구간의 합산 거리(m).
+          required: [status, congestedDistanceMeters]
+          additionalProperties: false
         warnings:
           type: array
           items:
@@ -10555,6 +10583,7 @@ components:
       - estimatedArrivalAt
       - expiresAt
       - provider
+      - trafficSummary
       - warnings
       additionalProperties: false
       description: ''
@@ -16058,7 +16087,9 @@ x-screen-coverage:
   source: OFF p2,16
   operations:
   - getHome
-  note: 차량 Bluetooth는 FE
+  - createRoute
+  - getRoute
+  note: 차량 Bluetooth는 FE. 교통 카드는 목적지 설정 후 경로 응답을 사용한다.
 - id: OFF-02
   feature: 5종 카테고리·7곳 추천·새로고침
   source: OFF p3
